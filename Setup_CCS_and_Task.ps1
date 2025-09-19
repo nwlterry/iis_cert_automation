@@ -4,14 +4,11 @@
 #
 # This script is designed for an air-gapped environment running Windows PowerShell 5.1 (Windows Server 2019/2022).
 # It handles SecureString conversion without the -AsPlainText parameter (not available in PowerShell 5.1).
-# The CredentialManager module must be manually installed from a downloaded package.
-# Instructions for manual installation:
-# 1. On a machine with internet access, download the CredentialManager module:
+# The CredentialManager module must be manually installed from a .nupkg package if not already present.
+# Instructions for obtaining the CredentialManager package:
+# 1. On a machine with internet access, download the module:
 #    Save-Module -Name CredentialManager -Path "C:\Temp\Modules"
-# 2. Transfer the downloaded module (C:\Temp\Modules\CredentialManager) to the air-gapped server, e.g., to C:\Temp\Modules.
-# 3. On the air-gapped server, install the module:
-#    Copy the CredentialManager folder to C:\Program Files\WindowsPowerShell\Modules
-#    Or use: Install-Module -Name CredentialManager -Path "C:\Temp\Modules\CredentialManager" -Scope AllUsers
+# 2. Transfer the .nupkg file (e.g., CredentialManager.2.0.nupkg) to the air-gapped server, e.g., to C:\Temp\Modules.
 #
 # The CCS file share must be pre-configured to allow access only via computer accounts (SYSTEM context).
 # To set up the share securely (run on the file server):
@@ -86,6 +83,44 @@ function Log-TaskSchedulerEvents {
         }
     } catch {
         Write-SetupLog -Message "Failed to retrieve Task Scheduler events for ${TaskName}: ${$_.Exception.Message}" -Level "WARNING"
+    }
+}
+
+# Function to install CredentialManager from a .nupkg file
+function Install-CredentialManagerFromNupkg {
+    param (
+        [string]$NupkgPath
+    )
+    try {
+        if (-not (Test-Path $NupkgPath)) {
+            Write-SetupLog -Message "CredentialManager .nupkg file not found at ${NupkgPath}" -Level "ERROR"
+            throw "Invalid .nupkg file path"
+        }
+        $moduleDestination = "C:\Program Files\WindowsPowerShell\Modules\CredentialManager"
+        # Create a temporary directory for extraction
+        $tempExtractPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "CredentialManager_$(Get-Date -Format 'yyyyMMdd_HHmmss')")
+        New-Item -Path $tempExtractPath -ItemType Directory -Force | Out-Null
+        # Rename .nupkg to .zip and extract
+        $zipPath = Join-Path -Path $tempExtractPath -ChildPath "CredentialManager.zip"
+        Copy-Item -Path $NupkgPath -Destination $zipPath -Force
+        Expand-Archive -Path $zipPath -DestinationPath $tempExtractPath -Force -ErrorAction Stop
+        # Find the module folder (typically named CredentialManager_<version>)
+        $moduleFolder = Get-ChildItem -Path $tempExtractPath -Directory | Where-Object { $_.Name -like "CredentialManager*" } | Select-Object -First 1
+        if (-not $moduleFolder) {
+            Write-SetupLog -Message "Could not find CredentialManager module folder in extracted .nupkg" -Level "ERROR"
+            throw "Module folder not found in .nupkg"
+        }
+        # Move the module to the destination
+        if (Test-Path $moduleDestination) {
+            Remove-Item -Path $moduleDestination -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Move-Item -Path $moduleFolder.FullName -Destination $moduleDestination -Force -ErrorAction Stop
+        Write-SetupLog -Message "Successfully installed CredentialManager module to ${moduleDestination}"
+        # Clean up temporary files
+        Remove-Item -Path $tempExtractPath -Recurse -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-SetupLog -Message "Failed to install CredentialManager from ${NupkgPath}: ${$_.Exception.Message}" -Level "ERROR"
+        throw
     }
 }
 
@@ -236,20 +271,22 @@ try {
     # Test SYSTEM execution environment
     Test-SystemExecutionEnvironment -LogDir $TempLogDir
 
-    # Load WebAdministration module
-    Import-Module WebAdministration -ErrorAction Stop
-    Write-SetupLog -Message "Successfully loaded WebAdministration module"
-
-    # Check for CredentialManager module
+    # Check for CredentialManager module and install if missing
     $credentialManagerModule = Get-Module -ListAvailable -Name CredentialManager
     if (-not $credentialManagerModule) {
-        Write-SetupLog -Message "CredentialManager module not found. This script is running in an air-gapped environment." -Level "ERROR"
-        Write-SetupLog -Message "Please install the CredentialManager module manually:" -Level "ERROR"
-        Write-SetupLog -Message "1. On a machine with internet access, run: Save-Module -Name CredentialManager -Path 'C:\Temp\Modules'" -Level "ERROR"
-        Write-SetupLog -Message "2. Transfer the CredentialManager folder to the air-gapped server, e.g., to C:\Temp\Modules" -Level "ERROR"
-        Write-SetupLog -Message "3. Install the module by copying to C:\Program Files\WindowsPowerShell\Modules or run: Install-Module -Name CredentialManager -Path 'C:\Temp\Modules\CredentialManager' -Scope AllUsers" -Level "ERROR"
-        Write-SetupLog -Message "4. Alternatively, store the PFX password as SYSTEM using: powershell.exe -Command 'Import-Module CredentialManager; New-StoredCredential -Target PFXCertPassword -UserName PFXUser -Password <YourPassword> -Persist LocalMachine -Type Generic' as SYSTEM (e.g., via a temporary scheduled task)." -Level "ERROR"
-        throw "CredentialManager module not available"
+        Write-SetupLog -Message "CredentialManager module not found. This script is running in an air-gapped environment." -Level "WARNING"
+        $nupkgPath = Read-Host -Prompt "Enter the full path to the CredentialManager .nupkg file (e.g., C:\Temp\Modules\CredentialManager.2.0.nupkg)"
+        if (-not $nupkgPath) {
+            Write-SetupLog -Message "No .nupkg file path provided. A valid path is required." -Level "ERROR"
+            throw "CredentialManager .nupkg path not provided"
+        }
+        Install-CredentialManagerFromNupkg -NupkgPath $nupkgPath
+        $credentialManagerModule = Get-Module -ListAvailable -Name CredentialManager
+        if (-not $credentialManagerModule) {
+            Write-SetupLog -Message "Failed to load CredentialManager module after installation." -Level "ERROR"
+            Write-SetupLog -Message "Please manually install the module by copying the CredentialManager folder to C:\Program Files\WindowsPowerShell\Modules or run: Install-Module -Name CredentialManager -Path '<PathToNupkg>' -Scope AllUsers" -Level "ERROR"
+            throw "CredentialManager module not available"
+        }
     }
     Import-Module CredentialManager -ErrorAction Stop
     Write-SetupLog -Message "Successfully loaded CredentialManager module"
