@@ -1,14 +1,9 @@
-# PowerShell script to enable IIS Centralized Certificate Store (CCS), store PFX password in Credential Manager as SYSTEM,
+# PowerShell script to enable IIS Centralized Certificate Store (CCS) via registry, store PFX password in Credential Manager as SYSTEM,
 # and set up a scheduled task to trigger on certificate renewal event (Event ID 1001 in Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational)
 # and execute the provided export script (Export_Cert_CCS_Secure.ps1).
 #
 # This script is designed for an air-gapped environment running Windows PowerShell 5.1 (Windows Server 2019/2022).
 # It handles SecureString conversion without the -AsPlainText parameter (not available in PowerShell 5.1).
-# The CredentialManager module must be manually installed from a .nupkg package if not already present.
-# Instructions for obtaining the CredentialManager package:
-# 1. On a machine with internet access, download the module:
-#    Save-Module -Name CredentialManager -Path "C:\Temp\Modules"
-# 2. Transfer the .nupkg file (e.g., CredentialManager.2.0.nupkg) to the air-gapped server, e.g., to C:\Temp\Modules.
 #
 # The CCS file share must be pre-configured to allow access only via computer accounts (SYSTEM context).
 # To set up the share securely (run on the file server):
@@ -71,7 +66,7 @@ function Log-TaskSchedulerEvents {
         [string]$TaskName
     )
     try {
-        $events = Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -MaxEvents 20 -ErrorAction Stop |
+        $events = Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -MaxEvents 50 -ErrorAction Stop |
             Where-Object { $_.Message -like "*${TaskName}*" }
         if ($events) {
             Write-SetupLog -Message "Task Scheduler events for ${TaskName}:"
@@ -82,46 +77,50 @@ function Log-TaskSchedulerEvents {
             Write-SetupLog -Message "No recent Task Scheduler events found for ${TaskName}"
         }
     } catch {
-        Write-SetupLog -Message "Failed to retrieve Task Scheduler events for ${TaskName}: ${$_.Exception.Message}" -Level "WARNING"
+        Write-SetupLog -Message "Failed to retrieve Task Scheduler events for ${TaskName}: $($_.Exception.Message)" -Level "WARNING"
     }
 }
 
-# Function to install CredentialManager from a .nupkg file
-function Install-CredentialManagerFromNupkg {
-    param (
-        [string]$NupkgPath
+# Function to find a SYSTEM-writable directory
+function Find-SystemWritableDirectory {
+    $dirs = @(
+        "C:\Logs",
+        "C:\Windows\Temp",
+        [System.IO.Path]::GetTempPath(),
+        "C:\Temp"
     )
-    try {
-        if (-not (Test-Path $NupkgPath)) {
-            Write-SetupLog -Message "CredentialManager .nupkg file not found at ${NupkgPath}" -Level "ERROR"
-            throw "Invalid .nupkg file path"
+    foreach ($dir in $dirs) {
+        try {
+            if (-not (Test-Path $dir)) {
+                New-Item -Path $dir -ItemType Directory -Force | Out-Null
+                icacls $dir /grant "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" /grant "Administrators:(OI)(CI)(F)" | Out-Null
+                Write-SetupLog -Message "Created directory ${dir} with SYSTEM and Administrators permissions"
+            }
+            $acl = icacls $dir
+            Write-SetupLog -Message "Permissions for ${dir}: $($acl -join ', ')"
+            $testFile = Join-Path -Path $dir -ChildPath "TestWrite_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt"
+            $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c echo Test > ${testFile}"
+            $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+            $testTaskName = "TestWriteDir"
+            Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
+            Start-Sleep -Seconds 60
+            Log-TaskSchedulerEvents -TaskName $testTaskName
+            Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            if (Test-Path $testFile) {
+                Write-SetupLog -Message "SYSTEM can write to ${dir}"
+                Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
+                return $dir
+            } else {
+                Write-SetupLog -Message "SYSTEM write test to ${dir} failed: No log file created" -Level "WARNING"
+            }
+        } catch {
+            Write-SetupLog -Message "Failed to test SYSTEM write permission to ${dir}: $($_.Exception.Message)" -Level "WARNING"
         }
-        $moduleDestination = "C:\Program Files\WindowsPowerShell\Modules\CredentialManager"
-        # Create a temporary directory for extraction
-        $tempExtractPath = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "CredentialManager_$(Get-Date -Format 'yyyyMMdd_HHmmss')")
-        New-Item -Path $tempExtractPath -ItemType Directory -Force | Out-Null
-        # Rename .nupkg to .zip and extract
-        $zipPath = Join-Path -Path $tempExtractPath -ChildPath "CredentialManager.zip"
-        Copy-Item -Path $NupkgPath -Destination $zipPath -Force
-        Expand-Archive -Path $zipPath -DestinationPath $tempExtractPath -Force -ErrorAction Stop
-        # Find the module folder (typically named CredentialManager_<version>)
-        $moduleFolder = Get-ChildItem -Path $tempExtractPath -Directory | Where-Object { $_.Name -like "CredentialManager*" } | Select-Object -First 1
-        if (-not $moduleFolder) {
-            Write-SetupLog -Message "Could not find CredentialManager module folder in extracted .nupkg" -Level "ERROR"
-            throw "Module folder not found in .nupkg"
-        }
-        # Move the module to the destination
-        if (Test-Path $moduleDestination) {
-            Remove-Item -Path $moduleDestination -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        Move-Item -Path $moduleFolder.FullName -Destination $moduleDestination -Force -ErrorAction Stop
-        Write-SetupLog -Message "Successfully installed CredentialManager module to ${moduleDestination}"
-        # Clean up temporary files
-        Remove-Item -Path $tempExtractPath -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {
-        Write-SetupLog -Message "Failed to install CredentialManager from ${NupkgPath}: ${$_.Exception.Message}" -Level "ERROR"
-        throw
     }
+    Write-SetupLog -Message "No SYSTEM-writable directory found. Falling back to C:\Windows\Temp." -Level "WARNING"
+    return "C:\Windows\Temp"
 }
 
 # Function to test directory write permissions for SYSTEM
@@ -130,11 +129,14 @@ function Test-SystemWritePermission {
         [string]$Path
     )
     try {
+        if (-not $Path -or $Path -match "^\[.*") {
+            Write-SetupLog -Message "Invalid path provided to Test-SystemWritePermission: ${Path}" -Level "ERROR"
+            return $false
+        }
         # Sanitize path to avoid invalid characters
         $Path = [System.IO.Path]::GetFullPath($Path)
-        $testFile = Join-Path -Path $Path -ChildPath "TestWrite_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-        $testLog = Join-Path -Path $Path -ChildPath "TestWriteLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"try { 'Test' | Out-File '${testFile}' -ErrorAction Stop; 'Success' | Out-File '${testLog}' -Append } catch { 'Error: ' + \$_.Exception.Message | Out-File '${testLog}' -Append }`""
+        $testFile = Join-Path -Path $Path -ChildPath "TestWrite_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt"
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c echo Test > ${testFile}"
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestWritePermission"
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -143,71 +145,259 @@ function Test-SystemWritePermission {
         Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
         Start-Sleep -Seconds 60
         Log-TaskSchedulerEvents -TaskName $testTaskName
-        if (Test-Path $testLog) {
-            $taskLog = Get-Content -Path $testLog -Raw
-            if ($taskLog -match "Success" -and (Test-Path $testFile)) {
-                Write-SetupLog -Message "SYSTEM write permission test to ${Path} succeeded"
-                Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
-                Remove-Item -Path $testLog -Force -ErrorAction SilentlyContinue
-                Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
-                return $true
-            } else {
-                Write-SetupLog -Message "SYSTEM write permission test failed. Log content: ${taskLog}" -Level "ERROR"
-                throw "SYSTEM write permission test failed"
-            }
+        if (Test-Path $testFile) {
+            Write-SetupLog -Message "SYSTEM write permission test to ${Path} succeeded"
+            Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+            return $true
         } else {
-            Write-SetupLog -Message "Test log file not found at ${testLog}. Falling back to direct write test." -Level "WARNING"
-            # Fallback: Try direct write as SYSTEM
-            $fallbackFile = Join-Path -Path $Path -ChildPath "FallbackTest_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-            $fallbackAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `' 'Test' | Out-File '${fallbackFile}' -ErrorAction Stop `'"
-            Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
-            Register-ScheduledTask -TaskName $testTaskName -Action $fallbackAction -Principal $principal -ErrorAction Stop | Out-Null
-            Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
-            Start-Sleep -Seconds 60
-            Log-TaskSchedulerEvents -TaskName $testTaskName
-            $writeSuccess = Test-Path $fallbackFile
-            if ($writeSuccess) {
-                Write-SetupLog -Message "Fallback SYSTEM write test to ${Path} succeeded"
-                Remove-Item -Path $fallbackFile -Force -ErrorAction SilentlyContinue
-            } else {
-                Write-SetupLog -Message "Fallback SYSTEM write test to ${Path} failed" -Level "ERROR"
-            }
-            Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
-            return $writeSuccess
+            Write-SetupLog -Message "SYSTEM write permission test to ${Path} failed" -Level "WARNING"
+            return $false
         }
     } catch {
-        Write-SetupLog -Message "Failed to test SYSTEM write permission to ${Path}: ${$_.Exception.Message}" -Level "ERROR"
+        Write-SetupLog -Message "Failed to test SYSTEM write permission to ${Path}: $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
 
-# Function to test SYSTEM execution environment
-function Test-SystemExecutionEnvironment {
+# Function to test minimal SYSTEM execution with cmd.exe
+function Test-MinimalSystemCmd {
     param (
         [string]$LogDir
     )
     try {
-        $testLog = Join-Path -Path $LogDir -ChildPath "SystemEnvTest_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-        $testCommand = "try { 'PSVersion: ' + \$PSVersionTable.PSVersion | Out-File '${testLog}' -Append; 'ModulePath: ' + \$env:PSModulePath | Out-File '${testLog}' -Append; 'Success' | Out-File '${testLog}' -Append } catch { 'Error: ' + \$_.Exception.Message | Out-File '${testLog}' -Append }"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$testCommand`""
+        if (-not $LogDir -or $LogDir -match "^\[.*") {
+            Write-SetupLog -Message "Invalid log directory provided to Test-MinimalSystemCmd: ${LogDir}" -Level "ERROR"
+            return
+        }
+        $testLog = Join-Path -Path $LogDir -ChildPath "MinimalSystemCmdTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c echo Test > ${testLog}"
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-        $testTaskName = "TestSystemEnv"
+        $testTaskName = "TestMinimalSystemCmd"
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
-        Write-SetupLog -Message "Registered test task ${testTaskName} to verify SYSTEM execution environment"
+        Write-SetupLog -Message "Registered minimal cmd test task ${testTaskName} to verify SYSTEM execution"
         Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
         Start-Sleep -Seconds 60
         Log-TaskSchedulerEvents -TaskName $testTaskName
         if (Test-Path $testLog) {
             $taskLog = Get-Content -Path $testLog -Raw
-            Write-SetupLog -Message "SYSTEM execution environment test log: ${taskLog}"
+            Write-SetupLog -Message "Minimal SYSTEM cmd execution test log: ${taskLog}"
             Remove-Item -Path $testLog -Force -ErrorAction SilentlyContinue
         } else {
-            Write-SetupLog -Message "SYSTEM execution environment test log not found at ${testLog}" -Level "WARNING"
+            Write-SetupLog -Message "Minimal SYSTEM cmd execution test log not found at ${testLog}" -Level "WARNING"
         }
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
     } catch {
-        Write-SetupLog -Message "Failed to test SYSTEM execution environment: ${$_.Exception.Message}" -Level "ERROR"
+        Write-SetupLog -Message "Failed to test minimal SYSTEM cmd execution: $($_.Exception.Message)" -Level "ERROR"
+    }
+}
+
+# Function to test minimal SYSTEM execution with PowerShell
+function Test-MinimalSystemPowerShell {
+    param (
+        [string]$LogDir
+    )
+    try {
+        if (-not $LogDir -or $LogDir -match "^\[.*") {
+            Write-SetupLog -Message "Invalid log directory provided to Test-MinimalSystemPowerShell: ${LogDir}" -Level "ERROR"
+            return
+        }
+        $testLog = Join-Path -Path $LogDir -ChildPath "MinimalSystemTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
+        $tempScript = Join-Path -Path "C:\Windows\Temp" -ChildPath "MinimalSystemTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').ps1"
+        $psCommand = @"
+try {
+    'Test' | Out-File -FilePath '${testLog}' -Append -ErrorAction Stop
+} catch {
+    for (`$i = 0; `$i -lt 3; `$i++) {
+        try {
+            "Error: `$($_.Exception.Message)" | Out-File -FilePath "${testLog}" -Append -ErrorAction Stop
+            break
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+"@
+        Set-Content -Path $tempScript -Value $psCommand -Force
+        icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
+        Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}"
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`" > ${testLog} 2>&1"
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${testCommand}"
+        $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $testTaskName = "TestMinimalSystem"
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+        Write-SetupLog -Message "Registered minimal test task ${testTaskName} to verify SYSTEM execution"
+        Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
+        Start-Sleep -Seconds 60
+        Log-TaskSchedulerEvents -TaskName $testTaskName
+        if (Test-Path $testLog) {
+            $taskLog = Get-Content -Path $testLog -Raw
+            Write-SetupLog -Message "Minimal SYSTEM PowerShell execution test log: ${taskLog}"
+            Remove-Item -Path $testLog -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-SetupLog -Message "Minimal SYSTEM PowerShell execution test log not found at ${testLog}" -Level "WARNING"
+        }
+        Remove-Item -Path $tempScript -Force -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    } catch {
+        Write-SetupLog -Message "Failed to test minimal SYSTEM PowerShell execution: $($_.Exception.Message)" -Level "ERROR"
+    }
+}
+
+# Function to test PowerShell error logging via cmd.exe
+function Test-PowerShellError {
+    param (
+        [string]$LogDir
+    )
+    try {
+        if (-not $LogDir -or $LogDir -match "^\[.*") {
+            Write-SetupLog -Message "Invalid log directory provided to Test-PowerShellError: ${LogDir}" -Level "ERROR"
+            return
+        }
+        $testLog = Join-Path -Path $LogDir -ChildPath "PowerShellErrorTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
+        $tempScript = Join-Path -Path "C:\Windows\Temp" -ChildPath "PowerShellErrorTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').ps1"
+        $psCommand = @"
+try {
+    throw 'Test error'
+} catch {
+    for (`$i = 0; `$i -lt 3; `$i++) {
+        try {
+            "Error: `$($_.Exception.Message)" | Out-File -FilePath "${testLog}" -Append -ErrorAction Stop
+            break
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+"@
+        Set-Content -Path $tempScript -Value $psCommand -Force
+        icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
+        Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}"
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`" > ${testLog} 2>&1"
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${testCommand}"
+        $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $testTaskName = "TestPowerShellError"
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+        Write-SetupLog -Message "Registered test task ${testTaskName} to verify PowerShell error logging via cmd.exe"
+        Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
+        Start-Sleep -Seconds 60
+        Log-TaskSchedulerEvents -TaskName $testTaskName
+        if (Test-Path $testLog) {
+            $taskLog = Get-Content -Path $testLog -Raw
+            Write-SetupLog -Message "PowerShell error test log via cmd.exe: ${taskLog}"
+            Remove-Item -Path $testLog -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-SetupLog -Message "PowerShell error test log not found at ${testLog}" -Level "WARNING"
+        }
+        Remove-Item -Path $tempScript -Force -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    } catch {
+        Write-SetupLog -Message "Failed to test PowerShell error logging via cmd.exe: $($_.Exception.Message)" -Level "ERROR"
+    }
+}
+
+# Function to test PowerShell environment in SYSTEM context
+function Test-PowerShellEnvironment {
+    param (
+        [string]$LogDir
+    )
+    try {
+        if (-not $LogDir -or $LogDir -match "^\[.*") {
+            Write-SetupLog -Message "Invalid log directory provided to Test-PowerShellEnvironment: ${LogDir}" -Level "ERROR"
+            return
+        }
+        $testLog = Join-Path -Path $LogDir -ChildPath "PowerShellEnvTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
+        $tempScript = Join-Path -Path "C:\Windows\Temp" -ChildPath "PowerShellEnvTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').ps1"
+        $psCommand = @"
+try {
+    `$envInfo = "PSVersion: `$($PSVersionTable.PSVersion)"
+    `$envInfo += "`nExecutionPolicy: `$(Get-ExecutionPolicy -Scope CurrentUser)"
+    `$envInfo += "`nUser: `$($env:USERNAME)"
+    `$envInfo += "`nPath: `$($env:PSModulePath)"
+    `$envInfo += "`nSecurityPolicy: `$(Get-ExecutionPolicy -List | Out-String)"
+    `$envInfo += "`nWhoAmI: `$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+    `$envInfo += "`nErrorActionPreference: `$($ErrorActionPreference)"
+    `$envInfo += "`nAppLockerPolicy: `$(try { Get-AppLockerPolicy -Effective -Local | Out-String } catch { 'Error: ' + `$_.Exception.Message })"
+    `$envInfo += "`nProcessToken: `$(try { [System.Security.Principal.WindowsIdentity]::GetCurrent().Groups | ForEach-Object { `$_.Translate([System.Security.Principal.NTAccount]) } | Out-String } catch { 'Error: ' + `$_.Exception.Message })"
+    `$envInfo | Out-File -FilePath "${testLog}" -Append -ErrorAction Stop
+} catch {
+    for (`$i = 0; `$i -lt 3; `$i++) {
+        try {
+            "Error: `$($_.Exception.Message)" | Out-File -FilePath "${testLog}" -Append -ErrorAction Stop
+            break
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+"@
+        Set-Content -Path $tempScript -Value $psCommand -Force
+        icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
+        Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}"
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`" > ${testLog} 2>&1"
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${testCommand}"
+        $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $testTaskName = "TestPowerShellEnv"
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+        Write-SetupLog -Message "Registered test task ${testTaskName} to verify PowerShell environment in SYSTEM context"
+        Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
+        Start-Sleep -Seconds 60
+        Log-TaskSchedulerEvents -TaskName $testTaskName
+        if (Test-Path $testLog) {
+            $taskLog = Get-Content -Path $testLog -Raw
+            Write-SetupLog -Message "PowerShell environment test log: ${taskLog}"
+            Remove-Item -Path $testLog -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-SetupLog -Message "PowerShell environment test log not found at ${testLog}" -Level "WARNING"
+        }
+        Remove-Item -Path $tempScript -Force -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    } catch {
+        Write-SetupLog -Message "Failed to test PowerShell environment in SYSTEM context: $($_.Exception.Message)" -Level "ERROR"
+    }
+}
+
+# Function to verify credential storage in SYSTEM context
+function Verify-CredentialStorage {
+    param (
+        [string]$LogDir
+    )
+    try {
+        $testLog = Join-Path -Path $LogDir -ChildPath "CmdkeyVerify_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
+        $verifyCommand = "cmdkey /list | findstr PFXCertPassword > ${testLog}"
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${verifyCommand}"
+        $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $testTaskName = "TestCmdkeyVerify"
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
+        Write-SetupLog -Message "Registered test task ${testTaskName} to verify credential storage in SYSTEM context"
+        Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
+        Start-Sleep -Seconds 60
+        Log-TaskSchedulerEvents -TaskName $testTaskName
+        if (Test-Path $testLog) {
+            $taskLog = Get-Content -Path $testLog -Raw
+            Write-SetupLog -Message "Credential verification log: ${taskLog}"
+            Remove-Item -Path $testLog -Force -ErrorAction SilentlyContinue
+            if ($taskLog -match "PFXCertPassword") {
+                Write-SetupLog -Message "Cmdkey credential verified in SYSTEM context: ${taskLog}"
+                return $true
+            } else {
+                Write-SetupLog -Message "Cmdkey credential not found in SYSTEM context. Log content: ${taskLog}" -Level "ERROR"
+                return $false
+            }
+        } else {
+            Write-SetupLog -Message "Credential verification log not found at ${testLog}" -Level "ERROR"
+            return $false
+        }
+    } catch {
+        Write-SetupLog -Message "Failed to verify credential storage in SYSTEM context: $($_.Exception.Message)" -Level "ERROR"
+        return $false
+    } finally {
+        Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
     }
 }
 
@@ -215,7 +405,7 @@ try {
     # Check Task Scheduler service status
     $taskService = Get-Service -Name Schedule -ErrorAction Stop
     if ($taskService.Status -ne 'Running') {
-        Write-SetupLog -Message "Task Scheduler service is not running. Current status: ${$taskService.Status}" -Level "ERROR"
+        Write-SetupLog -Message "Task Scheduler service is not running. Current status: $($taskService.Status)" -Level "ERROR"
         throw "Task Scheduler service is not running"
     }
     Write-SetupLog -Message "Task Scheduler service is running"
@@ -230,6 +420,20 @@ try {
     # Log module paths for SYSTEM context
     $modulePath = $env:PSModulePath
     Write-SetupLog -Message "PowerShell module path: ${modulePath}"
+
+    # Log security policy information
+    try {
+        $appLockerPolicy = Get-AppLockerPolicy -Effective -Local -ErrorAction Stop
+        Write-SetupLog -Message "AppLocker policy: $($appLockerPolicy | Out-String)"
+    } catch {
+        Write-SetupLog -Message "Failed to retrieve AppLocker policy: $($_.Exception.Message)" -Level "WARNING"
+    }
+    try {
+        $groupPolicy = gpresult /R /SCOPE COMPUTER
+        Write-SetupLog -Message "Group Policy (Computer scope): $($groupPolicy -join ', ')"
+    } catch {
+        Write-SetupLog -Message "Failed to retrieve Group Policy: $($_.Exception.Message)" -Level "WARNING"
+    }
 
     # Prompt for ExportScriptPath if not provided
     if (-not $ExportScriptPath) {
@@ -256,40 +460,32 @@ try {
     if (-not (Test-Path $TempLogDir)) {
         try {
             New-Item -Path $TempLogDir -ItemType Directory -Force | Out-Null
-            Write-SetupLog -Message "Created temporary log directory: ${TempLogDir}"
+            icacls $TempLogDir /grant "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" /grant "Administrators:(OI)(CI)(F)" | Out-Null
+            Write-SetupLog -Message "Created temporary log directory: ${TempLogDir} with SYSTEM and Administrators permissions"
         } catch {
-            Write-SetupLog -Message "Failed to create temporary log directory ${TempLogDir}: ${$_.Exception.Message}" -Level "ERROR"
+            Write-SetupLog -Message "Failed to create temporary log directory ${TempLogDir}: $($_.Exception.Message)" -Level "ERROR"
             throw
         }
     }
     if (-not (Test-SystemWritePermission -Path $TempLogDir)) {
-        Write-SetupLog -Message "SYSTEM account cannot write to ${TempLogDir}. Please ensure SYSTEM has write permissions or choose a different directory." -Level "ERROR"
-        Write-SetupLog -Message "To grant permissions, run: icacls '${TempLogDir}' /grant 'NT AUTHORITY\SYSTEM:(OI)(CI)(F)'" -Level "ERROR"
-        throw "SYSTEM lacks write permissions to temporary log directory"
+        Write-SetupLog -Message "SYSTEM account cannot write to ${TempLogDir}. Attempting to find a SYSTEM-writable directory." -Level "WARNING"
+        $TempLogDir = Find-SystemWritableDirectory
+        Write-SetupLog -Message "Using SYSTEM-writable directory: ${TempLogDir}"
     }
+    $acl = icacls $TempLogDir
+    Write-SetupLog -Message "Permissions for ${TempLogDir}: $($acl -join ', ')"
 
-    # Test SYSTEM execution environment
-    Test-SystemExecutionEnvironment -LogDir $TempLogDir
+    # Test minimal SYSTEM execution with cmd.exe
+    Test-MinimalSystemCmd -LogDir $TempLogDir
 
-    # Check for CredentialManager module and install if missing
-    $credentialManagerModule = Get-Module -ListAvailable -Name CredentialManager
-    if (-not $credentialManagerModule) {
-        Write-SetupLog -Message "CredentialManager module not found. This script is running in an air-gapped environment." -Level "WARNING"
-        $nupkgPath = Read-Host -Prompt "Enter the full path to the CredentialManager .nupkg file (e.g., C:\Temp\Modules\CredentialManager.2.0.nupkg)"
-        if (-not $nupkgPath) {
-            Write-SetupLog -Message "No .nupkg file path provided. A valid path is required." -Level "ERROR"
-            throw "CredentialManager .nupkg path not provided"
-        }
-        Install-CredentialManagerFromNupkg -NupkgPath $nupkgPath
-        $credentialManagerModule = Get-Module -ListAvailable -Name CredentialManager
-        if (-not $credentialManagerModule) {
-            Write-SetupLog -Message "Failed to load CredentialManager module after installation." -Level "ERROR"
-            Write-SetupLog -Message "Please manually install the module by copying the CredentialManager folder to C:\Program Files\WindowsPowerShell\Modules or run: Install-Module -Name CredentialManager -Path '<PathToNupkg>' -Scope AllUsers" -Level "ERROR"
-            throw "CredentialManager module not available"
-        }
-    }
-    Import-Module CredentialManager -ErrorAction Stop
-    Write-SetupLog -Message "Successfully loaded CredentialManager module"
+    # Test minimal SYSTEM execution with PowerShell
+    Test-MinimalSystemPowerShell -LogDir $TempLogDir
+
+    # Test PowerShell error logging via cmd.exe
+    Test-PowerShellError -LogDir $TempLogDir
+
+    # Test PowerShell environment in SYSTEM context
+    Test-PowerShellEnvironment -LogDir $TempLogDir
 
     # Verify Windows Server version (2019 or 2022)
     $osVersion = (Get-CimInstance -ClassName Win32_OperatingSystem).Caption
@@ -299,7 +495,15 @@ try {
     }
     Write-SetupLog -Message "Running on ${osVersion}"
 
-    # Install Web-CertProvider feature if not installed
+    # Install Web-Scripting-Tools and Web-CertProvider features if not already installed
+    $scriptingFeature = Get-WindowsFeature -Name Web-Scripting-Tools
+    if (-not $scriptingFeature.Installed) {
+        Write-SetupLog -Message "Installing Web-Scripting-Tools feature"
+        Install-WindowsFeature -Name Web-Scripting-Tools -ErrorAction Stop
+        Write-SetupLog -Message "Web-Scripting-Tools feature installed"
+    } else {
+        Write-SetupLog -Message "Web-Scripting-Tools feature is already installed"
+    }
     $ccsFeature = Get-WindowsFeature -Name Web-CertProvider
     if (-not $ccsFeature.Installed) {
         Write-SetupLog -Message "Installing Web-CertProvider feature"
@@ -309,58 +513,23 @@ try {
         Write-SetupLog -Message "Web-CertProvider feature is already installed"
     }
 
-    # Check if centralCertProvider section exists, and create it if missing
-    $ccsConfig = Get-WebConfiguration -Filter "/system.webServer/centralCertProvider" -ErrorAction SilentlyContinue
-    if ($null -eq $ccsConfig) {
-        Write-SetupLog -Message "centralCertProvider configuration section not found. Creating section in applicationHost.config" -Level "WARNING"
-        try {
-            # Add the centralCertProvider section
-            Add-WebConfiguration -Filter "/system.webServer" -Value @{ Name = "centralCertProvider"; enabled = $false } -PSPath "MACHINE/WEBROOT/APPHOST" -ErrorAction Stop
-            Write-SetupLog -Message "Successfully created centralCertProvider section"
-            # Refresh IIS configuration
-            Start-Process -FilePath "iisreset" -ArgumentList "/noforce" -Wait -NoNewWindow -ErrorAction Stop
-            Write-SetupLog -Message "IIS configuration refreshed"
-            $ccsConfig = Get-WebConfiguration -Filter "/system.webServer/centralCertProvider" -ErrorAction Stop
-            if ($null -eq $ccsConfig) {
-                Write-SetupLog -Message "centralCertProvider section still not found after refresh. Retrying creation." -Level "WARNING"
-                Add-WebConfiguration -Filter "/system.webServer" -Value @{ Name = "centralCertProvider"; enabled = $false } -PSPath "MACHINE/WEBROOT/APPHOST" -ErrorAction Stop
-                Start-Process -FilePath "iisreset" -ArgumentList "/noforce" -Wait -NoNewWindow -ErrorAction Stop
-                $ccsConfig = Get-WebConfiguration -Filter "/system.webServer/centralCertProvider" -ErrorAction Stop
-            }
-        } catch {
-            Write-SetupLog -Message "Failed to create centralCertProvider section or refresh IIS: ${$_.Exception.Message}" -Level "ERROR"
-            throw
+    # Verify and configure CCS via registry
+    $registryPath = "HKLM:\SOFTWARE\Microsoft\IIS\CentralCertProvider"
+    try {
+        $registryValues = Get-ItemProperty -Path $registryPath -ErrorAction Stop
+        Write-SetupLog -Message "CCS registry key found: Enabled=$($registryValues.Enabled), PhysicalPath=$($registryValues.CertStoreLocation)"
+        if ($registryValues.Enabled -ne 1 -or $registryValues.CertStoreLocation -ne $CcsPhysicalPath) {
+            Write-SetupLog -Message "CCS registry key values incorrect. Updating registry." -Level "WARNING"
+            Set-ItemProperty -Path $registryPath -Name Enabled -Value 1 -ErrorAction Stop
+            Set-ItemProperty -Path $registryPath -Name CertStoreLocation -Value $CcsPhysicalPath -ErrorAction Stop
+            Write-SetupLog -Message "Updated CCS registry key: Enabled=1, PhysicalPath=$CcsPhysicalPath"
         }
-    } else {
-        Write-SetupLog -Message "centralCertProvider configuration section found"
-    }
-
-    # Enable CCS if not enabled
-    if ($ccsConfig.enabled -ne $true) {
-        Write-SetupLog -Message "Enabling Centralized Certificate Store"
-        try {
-            Set-WebConfigurationProperty -Filter /system.webServer/centralCertProvider -Name enabled -Value $true -PSPath "MACHINE/WEBROOT/APPHOST" -ErrorAction Stop
-            Write-SetupLog -Message "Centralized Certificate Store enabled"
-        } catch {
-            Write-SetupLog -Message "Failed to enable Centralized Certificate Store: ${$_.Exception.Message}" -Level "ERROR"
-            throw
-        }
-    } else {
-        Write-SetupLog -Message "Centralized Certificate Store is already enabled"
-    }
-
-    # Set CCS physical path (uses computer account for access if no credentials set)
-    if ($ccsConfig.physicalPath -ne $CcsPhysicalPath) {
-        Write-SetupLog -Message "Setting CCS physical path to ${CcsPhysicalPath}"
-        try {
-            Set-WebConfigurationProperty -Filter /system.webServer/centralCertProvider -Name physicalPath -Value $CcsPhysicalPath -PSPath "MACHINE/WEBROOT/APPHOST" -ErrorAction Stop
-            Write-SetupLog -Message "CCS physical path set to ${CcsPhysicalPath}"
-        } catch {
-            Write-SetupLog -Message "Failed to set CCS physical path: ${$_.Exception.Message}" -Level "ERROR"
-            throw
-        }
-    } else {
-        Write-SetupLog -Message "CCS physical path is already set to ${CcsPhysicalPath}"
+    } catch {
+        Write-SetupLog -Message "CCS registry key not found at ${registryPath}. Creating key." -Level "WARNING"
+        New-Item -Path $registryPath -Force | Out-Null
+        New-ItemProperty -Path $registryPath -Name Enabled -Value 1 -PropertyType DWord -ErrorAction Stop | Out-Null
+        New-ItemProperty -Path $registryPath -Name CertStoreLocation -Value $CcsPhysicalPath -PropertyType String -ErrorAction Stop | Out-Null
+        Write-SetupLog -Message "Created CCS registry key: Enabled=1, PhysicalPath=$CcsPhysicalPath"
     }
 
     # Verify CCS path accessibility as SYSTEM
@@ -372,38 +541,25 @@ try {
         }
         Write-SetupLog -Message "CCS path ${CcsPhysicalPath} is accessible"
     } catch {
-        Write-SetupLog -Message "Error accessing CCS path ${CcsPhysicalPath}: ${$_.Exception.Message}" -Level "ERROR"
+        Write-SetupLog -Message "Error accessing CCS path ${CcsPhysicalPath}: $($_.Exception.Message)" -Level "ERROR"
         throw
     }
 
-    # Store PFX password in Credential Manager as SYSTEM using a temporary scheduled task
+    # Store PFX password in Credential Manager as SYSTEM using cmd.exe
     $tempTaskName = "TempStoreCredential"
-    $tempLogPath = Join-Path -Path $TempLogDir -ChildPath "TempStoreCredential_$((Get-Date -Format 'yyyyMMdd_HHmmss')).log"
-    $tempScriptPath = Join-Path -Path $TempLogDir -ChildPath "TempStoreCredential_$((Get-Date -Format 'yyyyMMdd_HHmmss')).ps1"
+    $tempLogPath = Join-Path -Path $TempLogDir -ChildPath "TempStoreCredential_$((Get-Date -Format 'yyyyMMdd_HHmmss_fff')).log"
     $psPassword = Convert-SecureStringToPlainText -SecureString $PfxPassword
     # Escape single quotes in the password to prevent command injection
     $psPassword = $psPassword -replace "'", "''"
-    $modulePath = "C:\Program Files\WindowsPowerShell\Modules"
-    $storeCommand = @"
-Import-Module CredentialManager -ErrorAction Stop -Force -ModulePath '${modulePath}'
-try {
-    New-StoredCredential -Target PFXCertPassword -UserName 'PFXUser' -Password '$psPassword' -Persist LocalMachine -Type Generic -ErrorAction Stop
-    'Success' | Out-File '$tempLogPath' -Append
-} catch {
-    'Error: ' + \$_.Exception.Message | Out-File '$tempLogPath' -Append
-}
-"@
+    $storeCommand = "cmdkey /generic:PFXCertPassword /user:PFXUser /pass:$psPassword > $tempLogPath 2>&1"
     try {
-        # Write the command to a temporary script file
-        Set-Content -Path $tempScriptPath -Value $storeCommand -ErrorAction Stop
-        Write-SetupLog -Message "Created temporary script file at ${tempScriptPath}"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -File `"${tempScriptPath}`""
+        $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c $storeCommand"
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         Unregister-ScheduledTask -TaskName $tempTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $tempTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
         Write-SetupLog -Message "Temporary task ${tempTaskName} created to store credential as SYSTEM"
     } catch {
-        Write-SetupLog -Message "Failed to register temporary task ${tempTaskName}: ${$_.Exception.Message}" -Level "ERROR"
+        Write-SetupLog -Message "Failed to register temporary task ${tempTaskName}: $($_.Exception.Message)" -Level "ERROR"
         throw
     }
 
@@ -415,99 +571,54 @@ try {
         Log-TaskSchedulerEvents -TaskName $tempTaskName
         if (Test-Path $tempLogPath) {
             $taskLog = Get-Content -Path $tempLogPath -Raw
-            if ($taskLog -match "Success" -or $taskLog -match "TargetName\s*:\s*PFXCertPassword") {
+            if ($taskLog -match "Credential added successfully") {
                 Write-SetupLog -Message "Temporary task ${tempTaskName} executed successfully. Log content: ${taskLog}"
             } else {
                 Write-SetupLog -Message "Temporary task ${tempTaskName} failed. Log content: ${taskLog}" -Level "ERROR"
                 throw "Temporary task execution failed"
             }
         } else {
-            Write-SetupLog -Message "Temporary task log file not found at ${tempLogPath}. Attempting direct credential storage as fallback." -Level "WARNING"
-            # Fallback: Try direct credential storage with log
-            $fallbackLog = Join-Path -Path $TempLogDir -ChildPath "FallbackCredential_$((Get-Date -Format 'yyyyMMdd_HHmmss')).log"
-            $fallbackScriptPath = Join-Path -Path $TempLogDir -ChildPath "FallbackCredential_$((Get-Date -Format 'yyyyMMdd_HHmmss')).ps1"
-            $fallbackCommand = @"
-Import-Module CredentialManager -ErrorAction Stop -Force -ModulePath '${modulePath}'
-try {
-    New-StoredCredential -Target PFXCertPassword -UserName 'PFXUser' -Password '$psPassword' -Persist LocalMachine -Type Generic -ErrorAction Stop
-    'Success' | Out-File '$fallbackLog' -Append
-} catch {
-    'Error: ' + \$_.Exception.Message | Out-File '$fallbackLog' -Append
-}
-"@
-            Set-Content -Path $fallbackScriptPath -Value $fallbackCommand -ErrorAction Stop
-            Write-SetupLog -Message "Created fallback script file at ${fallbackScriptPath}"
-            $fallbackAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -File `"${fallbackScriptPath}`""
-            Unregister-ScheduledTask -TaskName $tempTaskName -Confirm:$false -ErrorAction SilentlyContinue
-            Register-ScheduledTask -TaskName $tempTaskName -Action $fallbackAction -Principal $principal -ErrorAction Stop | Out-Null
-            Start-ScheduledTask -TaskName $tempTaskName -ErrorAction Stop
-            Start-Sleep -Seconds 60
-            Log-TaskSchedulerEvents -TaskName $tempTaskName
-            if (Test-Path $fallbackLog) {
-                $fallbackLogContent = Get-Content -Path $fallbackLog -Raw
-                if ($fallbackLogContent -match "Success" -or $fallbackLogContent -match "TargetName\s*:\s*PFXCertPassword") {
-                    Write-SetupLog -Message "Fallback credential storage succeeded. Log content: ${fallbackLogContent}"
-                } else {
-                    Write-SetupLog -Message "Fallback credential storage failed. Log content: ${fallbackLogContent}" -Level "ERROR"
-                    throw "Fallback credential storage failed"
-                }
-            } else {
-                Write-SetupLog -Message "Fallback log file not found at ${fallbackLog}. Attempting direct credential storage without log." -Level "WARNING"
-                # Final fallback: Store credential directly without log
-                $finalScriptPath = Join-Path -Path $TempLogDir -ChildPath "FinalCredential_$((Get-Date -Format 'yyyyMMdd_HHmmss')).ps1"
-                $finalCommand = @"
-Import-Module CredentialManager -ErrorAction Stop -Force -ModulePath '${modulePath}'
-New-StoredCredential -Target PFXCertPassword -UserName 'PFXUser' -Password '$psPassword' -Persist LocalMachine -Type Generic -ErrorAction Stop
-"@
-                Set-Content -Path $finalScriptPath -Value $finalCommand -ErrorAction Stop
-                Write-SetupLog -Message "Created final script file at ${finalScriptPath}"
-                $finalAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -File `"${finalScriptPath}`""
-                Unregister-ScheduledTask -TaskName $tempTaskName -Confirm:$false -ErrorAction SilentlyContinue
-                Register-ScheduledTask -TaskName $tempTaskName -Action $finalAction -Principal $principal -ErrorAction Stop | Out-Null
-                Start-ScheduledTask -TaskName $tempTaskName -ErrorAction Stop
-                Start-Sleep -Seconds 60
-                Log-TaskSchedulerEvents -TaskName $tempTaskName
-                # Verify credential storage directly
-                try {
-                    $credential = Get-StoredCredential -Target PFXCertPassword -ErrorAction Stop
-                    if ($credential -and $credential.Password) {
-                        Write-SetupLog -Message "Final fallback credential storage succeeded (verified directly)"
-                    } else {
-                        Write-SetupLog -Message "Final fallback credential storage failed: Credential is null or missing password" -Level "ERROR"
-                        throw "Final fallback credential storage failed"
-                    }
-                } catch {
-                    Write-SetupLog -Message "Final fallback credential storage failed: ${$_.Exception.Message}" -Level "ERROR"
-                    throw "Final fallback credential storage failed"
-                }
-            }
+            Write-SetupLog -Message "Temporary task log file not found at ${tempLogPath}. Credential storage failed." -Level "ERROR"
+            throw "Credential storage failed"
         }
     } catch {
-        Write-SetupLog -Message "Error running temporary task ${tempTaskName}: ${$_.Exception.Message}" -Level "ERROR"
+        Write-SetupLog -Message "Error running temporary task ${tempTaskName}: $($_.Exception.Message)" -Level "ERROR"
         throw
     } finally {
         # Clean up temporary files and task
-        Remove-Item -Path $tempScriptPath -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $tempLogPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $fallbackScriptPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $fallbackLog -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $finalScriptPath -Force -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $tempTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Write-SetupLog -Message "Temporary task ${tempTaskName} and files removed"
     }
 
-    # Verify credential storage
-    try {
-        $credential = Get-StoredCredential -Target PFXCertPassword -ErrorAction Stop
-        if ($null -eq $credential -or $null -eq $credential.Password) {
-            Write-SetupLog -Message "Failed to verify stored credential for PFXCertPassword. Credential is null or missing password." -Level "ERROR"
-            Write-SetupLog -Message "Please manually store the credential as SYSTEM using: powershell.exe -Command 'Import-Module CredentialManager -Force -ModulePath \"C:\Program Files\WindowsPowerShell\Modules\"; New-StoredCredential -Target PFXCertPassword -UserName PFXUser -Password <YourPassword> -Persist LocalMachine -Type Generic'" -Level "ERROR"
-            throw "Credential storage failed"
+    # Verify credential storage in SYSTEM context with retries
+    $retryCount = 3
+    $retryDelay = 5
+    $credentialVerified = $false
+    for ($i = 0; $i -lt $retryCount; $i++) {
+        try {
+            $credentialVerified = Verify-CredentialStorage -LogDir $TempLogDir
+            if ($credentialVerified) {
+                break
+            } else {
+                Write-SetupLog -Message "Attempt $($i + 1) to verify credential failed. Retrying after ${retryDelay} seconds." -Level "WARNING"
+                if ($i -lt $retryCount - 1) {
+                    Start-Sleep -Seconds $retryDelay
+                    continue
+                }
+            }
+        } catch {
+            Write-SetupLog -Message "Attempt $($i + 1) to verify credential failed: $($_.Exception.Message)" -Level "WARNING"
+            if ($i -lt $retryCount - 1) {
+                Start-Sleep -Seconds $retryDelay
+                continue
+            }
         }
-        Write-SetupLog -Message "PFX password successfully stored in Credential Manager"
-    } catch {
-        Write-SetupLog -Message "Error verifying stored credential: ${$_.Exception.Message}. Please manually store the credential as SYSTEM using: powershell.exe -Command 'Import-Module CredentialManager -Force -ModulePath \"C:\Program Files\WindowsPowerShell\Modules\"; New-StoredCredential -Target PFXCertPassword -UserName PFXUser -Password <YourPassword> -Persist LocalMachine -Type Generic'" -Level "ERROR"
-        throw
+    }
+    if (-not $credentialVerified) {
+        Write-SetupLog -Message "Failed to verify stored credential for PFXCertPassword after $retryCount attempts. Credential is not found." -Level "ERROR"
+        Write-SetupLog -Message "Please manually store the credential as SYSTEM using: cmdkey /generic:PFXCertPassword /user:PFXUser /pass:<YourPassword>" -Level "ERROR"
+        throw "Credential storage failed"
     }
 
     # Verify export script exists
@@ -516,36 +627,49 @@ New-StoredCredential -Target PFXCertPassword -UserName 'PFXUser' -Password '$psP
         throw "Export script missing"
     }
 
-    # Set up the scheduled task for certificate renewal event
-    $queryXml = @"
+    # Set up the scheduled task for certificate renewal event using COM object
+    try {
+        $queryXml = @"
 <QueryList>
   <Query Id="0" Path="$EventLogPath">
     <Select Path="$EventLogPath">*[System[(EventID=$EventId)]]</Select>
   </Query>
 </QueryList>
 "@
-    $trigger = New-ScheduledTaskTrigger -TriggerType Event -Subscription $queryXml
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ExportScriptPath`""
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5)
-    $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    $task = New-ScheduledTask -Action $action -Trigger $trigger -Principal $principal -Settings $settings
-
-    # Register or update the task
-    try {
-        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        $taskService = New-Object -ComObject Schedule.Service
+        $taskService.Connect()
+        $taskDefinition = $taskService.NewTask(0)
+        $taskDefinition.RegistrationInfo.Description = "Triggers on certificate renewal event (Event ID $EventId) to run export script"
+        $taskDefinition.Settings.Enabled = $true
+        $taskDefinition.Settings.StartWhenAvailable = $true
+        $taskDefinition.Settings.ExecutionTimeLimit = "PT1H"
+        $taskDefinition.Settings.RestartCount = 3
+        $taskDefinition.Settings.RestartInterval = "PT5M"
+        $trigger = $taskDefinition.Triggers.Create(0) # 0 = Event trigger
+        $trigger.Subscription = $queryXml
+        $trigger.Enabled = $true
+        $action = $taskDefinition.Actions.Create(0) # 0 = Execute action
+        $action.Path = "cmd.exe"
+        $action.Arguments = "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ExportScriptPath`""
+        $principal = $taskDefinition.Principal
+        $principal.UserId = "NT AUTHORITY\SYSTEM"
+        $principal.LogonType = 3 # Service account
+        $principal.RunLevel = 1 # Highest privileges
+        $folder = $taskService.GetFolder("\")
+        try {
+            $folder.RegisterTaskDefinition($TaskName, $taskDefinition, 6, $null, $null, 3) | Out-Null
+            Write-SetupLog -Message "Registered new scheduled task: ${TaskName}"
+        } catch {
             Write-SetupLog -Message "Updating existing scheduled task: ${TaskName}"
-            Set-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop
-        } else {
-            Write-SetupLog -Message "Registering new scheduled task: ${TaskName}"
-            Register-ScheduledTask -TaskName $TaskName -InputObject $task -ErrorAction Stop | Out-Null
+            $folder.RegisterTaskDefinition($TaskName, $taskDefinition, 4, $null, $null, 3) | Out-Null
         }
     } catch {
-        Write-SetupLog -Message "Failed to register or update scheduled task ${TaskName}: ${$_.Exception.Message}" -Level "ERROR"
+        Write-SetupLog -Message "Failed to register or update scheduled task ${TaskName}: $($_.Exception.Message)" -Level "ERROR"
         throw
     }
 
     Write-SetupLog -Message "Setup completed successfully"
 } catch {
-    Write-SetupLog -Message "Error during setup: ${$_.Exception.Message}" -Level "ERROR"
+    Write-SetupLog -Message "Error during setup: $($_.Exception.Message)" -Level "ERROR"
     throw
 }
