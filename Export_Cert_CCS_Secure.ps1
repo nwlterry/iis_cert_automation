@@ -1,7 +1,8 @@
 # Optimized PowerShell script to handle certificate export with date-based logging, event creation, and permission checks
 # Triggered by Event ID 1001 (certificate renewal)
 # Updated to use registry for verifying Centralized Certificate Store and retrieving path,
-# get certificate file names from IIS HTTPS bindings via appcmd.exe, and handle access denied errors
+# get certificate file names from IIS HTTPS bindings via appcmd.exe, handle access denied errors,
+# and use a manually configured password for production
 
 # Define logging configuration
 $currentDate = Get-Date -Format "yyyy-MM-dd"
@@ -12,6 +13,16 @@ $eventLogName = "Application"
 # Define default PFX base path and local fallback
 $defaultPfxBasePath = "\\ocp-lab-srv-1.ocplab.net\IIS_Central_Cert_Store\Cert-IIS01-IIS02"
 $localFallbackPath = "C:\CertStore"
+
+# Define PFX password (set manually for production)
+$pfxPassword = $null
+# For production, uncomment and set the correct password:
+# $pfxPassword = ConvertTo-SecureString "<YourProductionPassword>" -AsPlainText -Force
+# For testing, use fallback password:
+if ($null -eq $pfxPassword) {
+    $pfxPassword = ConvertTo-SecureString "P@ssw0rdP@ssw0rd" -AsPlainText -Force
+    Write-Warning "Using fallback PFX password for testing. For production, manually set the correct password in the script."
+}
 
 # Ensure log directory exists
 $logDir = Split-Path $logPath -Parent
@@ -77,6 +88,8 @@ function Test-WritePermission {
         $ntfsPermissions = icacls $Path
         Write-Log -Message "NTFS permissions for $Path`: $($ntfsPermissions -join ', ')" -EventId 1052
         if ($Path -like "\\*") {
+            Write-Log -Message "Skipping SMB share permissions check for UNC path $Path on client server. Verify permissions on the file server." -EventId 1053
+        } else {
             $shareName = ($Path -split "\\")[3]
             try {
                 $smbPermissions = Get-SmbShareAccess -Name $shareName -ErrorAction Stop
@@ -146,39 +159,11 @@ if (-not (Test-WritePermission -Path $pfxBasePath)) {
     throw "No write permissions to CCS path"
 }
 
-# Retrieve PFX password (temporary fallback due to cmdkey limitations)
-try {
-    Write-Log -Message "Attempting to verify PFX credential using cmdkey" -EventId 1037
-    $tempLog = Join-Path -Path $logDir -ChildPath "CmdkeyRetrieve_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
-    $cmdkeyCommand = "cmdkey /list | findstr PFXCertPassword > $tempLog"
-    $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c $cmdkeyCommand"
-    $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-    $taskName = "TempCmdkeyRetrieve"
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-    Start-Sleep -Seconds 60
-    if (Test-Path $tempLog) {
-        $cmdkeyOutput = Get-Content -Path $tempLog -Raw
-        Remove-Item -Path $tempLog -Force -ErrorAction SilentlyContinue
-        if ($cmdkeyOutput -match "PFXCertPassword") {
-            Write-Log -Message "PFX credential verified using cmdkey" -EventId 1019
-            # Note: cmdkey /list does not return the password; use fallback for testing
-            $pfxPassword = ConvertTo-SecureString "P@ssw0rdP@ssw0rd" -AsPlainText -Force
-            Write-Log -Message "Using fallback PFX password for testing (cmdkey does not return password). For production, manually set the correct password in the script." -Level "WARNING" -EventId 1041
-        } else {
-            Write-Log -Message "Cmdkey credential not found for PFXCertPassword. Log content: $cmdkeyOutput" -Level "ERROR" -EventId 1039
-            throw "Invalid or missing credential in Credential Manager"
-        }
-    } else {
-        Write-Log -Message "Cmdkey retrieval log not found at $tempLog" -Level "ERROR" -EventId 1040
-        throw "Failed to verify PFX credential using cmdkey"
-    }
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-} catch {
-    Write-Log -Message "Failed to verify PFX credential using cmdkey: $($_.Exception.Message). Using fallback password for testing." -Level "WARNING" -EventId 1020
-    $pfxPassword = ConvertTo-SecureString "P@ssw0rdP@ssw0rd" -AsPlainText -Force
-    Write-Log -Message "Using fallback hardcoded password due to cmdkey limitation. For production, manually set the correct password in the script." -Level "WARNING" -EventId 1041
+# Log PFX password configuration
+if ($pfxPassword -eq (ConvertTo-SecureString "P@ssw0rdP@ssw0rd" -AsPlainText -Force)) {
+    Write-Log -Message "Using fallback PFX password for testing. For production, manually set the correct password in the script." -Level "WARNING" -EventId 1041
+} else {
+    Write-Log -Message "Using configured PFX password for certificate export" -EventId 1019
 }
 
 # Get certificate configurations from IIS HTTPS bindings using appcmd.exe
