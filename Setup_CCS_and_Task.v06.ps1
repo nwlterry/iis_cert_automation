@@ -10,7 +10,8 @@
 #
 # Prerequisites: The Web-CertProvider feature must be installed (automatically attempted via Install-WindowsFeature Web-CertProvider).
 # The WebAdministration module with Enable-WebCentralCertProvider cmdlet is required for CCS configuration.
-# In an air-gapped environment, ensure the Windows Server installation media is available or manually transfer the module.
+# Folders C:\Logs, C:\Scripts, and C:\Temp must exist, and files C:\Scripts\Export_Cert_CCS_Secure.ps1 and C:\Temp\credentialmanager.2.0.0.nupkg should be present.
+# In an air-gapped environment, ensure the Windows Server installation media is available or manually transfer the module and files.
 #
 # Note: For optimal prompt display, run this script in powershell.exe (ConsoleHost) instead of PowerShell ISE (Windows PowerShell ISE Host).
 
@@ -91,6 +92,53 @@ function Convert-SecureStringToPlainText {
             [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
         }
     }
+}
+
+# Function to check and create required folders and prompt for missing files
+function Initialize-FoldersAndFiles {
+    $requiredFolders = @(
+        "C:\Logs",
+        "C:\Scripts",
+        "C:\Temp"
+    )
+    $requiredFiles = @{
+        "C:\Scripts\Export_Cert_CCS_Secure.ps1" = "Please copy Export_Cert_CCS_Secure.ps1 to C:\Scripts."
+        "C:\Temp\credentialmanager.2.0.0.nupkg" = "Please copy credentialmanager.2.0.0.nupkg to C:\Temp."
+    }
+
+    # Check and create folders
+    foreach ($folder in $requiredFolders) {
+        if (-not (Test-Path $folder)) {
+            try {
+                New-Item -Path $folder -ItemType Directory -Force | Out-Null
+                icacls $folder /grant "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" /grant "Administrators:(OI)(CI)(F)" | Out-Null
+                Write-SetupLog -Message "Created directory ${folder} with SYSTEM and Administrators permissions" -EventId 1040
+            } catch {
+                Write-SetupLog -Message "Failed to create directory ${folder}: $($_.Exception.Message)" -Level "ERROR" -EventId 1041
+                throw
+            }
+        } else {
+            Write-SetupLog -Message "Directory ${folder} already exists" -EventId 1042
+        }
+    }
+
+    # Check for required files and prompt if missing
+    foreach ($file in $requiredFiles.Keys) {
+        if (-not (Test-Path $file)) {
+            Write-SetupLog -Message "File ${file} not found. ${requiredFiles[$file]}" -Level "WARNING" -EventId 1043
+            if ($Host.UI.RawUI) {
+                Write-SetupLog -Message "Prompting user to copy ${file}" -EventId 1044
+                $null = Read-Host -Prompt $requiredFiles[$file]
+            } else {
+                Write-SetupLog -Message "Non-interactive session: Cannot prompt for file copy. Ensure ${file} is present." -Level "ERROR" -EventId 1045
+                throw "Required file ${file} not found in non-interactive session"
+            }
+        } else {
+            Write-SetupLog -Message "File ${file} found" -EventId 1046
+        }
+    }
+
+    Write-SetupLog -Message "Folder and file initialization completed" -EventId 1047
 }
 
 # Function to log Task Scheduler events
@@ -339,7 +387,7 @@ try {
     }
 }
 
-# Function to run IIS Manager and wait for user input
+# Function to run IIS Manager and wait for user input or delay in non-interactive mode
 function Start-IISManager {
     try {
         $iisManagerPath = "$env:windir\system32\inetsrv\inetmgr.exe"
@@ -349,8 +397,13 @@ function Start-IISManager {
         }
         Write-SetupLog -Message "Starting IIS Manager (${iisManagerPath})" -EventId 1035
         $process = Start-Process -FilePath $iisManagerPath -PassThru -ErrorAction Stop
-        Write-SetupLog -Message "Waiting for user to configure IIS Manager and press Enter" -EventId 1037
-        $null = Read-Host -Prompt "Press Enter to continue after configuring IIS Manager"
+        if ($Host.UI.RawUI) {
+            Write-SetupLog -Message "Waiting for user to configure IIS Manager and press Enter" -EventId 1037
+            $null = Read-Host -Prompt "Press Enter to continue after configuring IIS Manager"
+        } else {
+            Write-SetupLog -Message "Non-interactive session: Waiting 60 seconds for IIS Manager to initialize" -EventId 1037
+            Start-Sleep -Seconds 60
+        }
         if (-not $process.HasExited) {
             Write-SetupLog -Message "Terminating IIS Manager process (PID: $($process.Id))" -EventId 1038
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
@@ -371,7 +424,7 @@ function Remove-CCSRegistryKeys {
     $keysToRemove = @("Username", "Password")
     try {
         if (-not (Test-Path $registryPath)) {
-            Write-SetupLog -Message "CCS registry path ${registryPath} does not exist. No cleanup required." -Level "WARNING" -EventId 1042
+            Write-SetupLog -Message "CCS registry path ${registryPath} does not exist. No cleanup required." -Level "WARNING" -EventId 1048
             return
         }
         $keysFound = $false
@@ -380,14 +433,14 @@ function Remove-CCSRegistryKeys {
                 $property = Get-ItemProperty -Path $registryPath -Name $key -ErrorAction SilentlyContinue
                 if ($property) {
                     $keysFound = $true
-                    Write-SetupLog -Message "Found registry key '${key}' in ${registryPath}" -EventId 1043
+                    Write-SetupLog -Message "Found registry key '${key}' in ${registryPath}" -EventId 1049
                     Remove-ItemProperty -Path $registryPath -Name $key -ErrorAction Stop
-                    Write-SetupLog -Message "Successfully removed registry key '${key}' from ${registryPath}" -EventId 1044
+                    Write-SetupLog -Message "Successfully removed registry key '${key}' from ${registryPath}" -EventId 1050
                 } else {
-                    Write-SetupLog -Message "Registry key '${key}' not found in ${registryPath}" -Level "WARNING" -EventId 1045
+                    Write-SetupLog -Message "Registry key '${key}' not found in ${registryPath}" -Level "WARNING" -EventId 1051
                 }
             } catch {
-                Write-SetupLog -Message "Failed to remove registry key '${key}' from ${registryPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1046
+                Write-SetupLog -Message "Failed to remove registry key '${key}' from ${registryPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1052
                 throw
             }
         }
@@ -397,23 +450,23 @@ function Remove-CCSRegistryKeys {
             try {
                 $property = Get-ItemProperty -Path $registryPath -Name $key -ErrorAction SilentlyContinue
                 if ($property) {
-                    Write-SetupLog -Message "Verification failed: Registry key '${key}' still exists in ${registryPath}" -Level "ERROR" -EventId 1047
+                    Write-SetupLog -Message "Verification failed: Registry key '${key}' still exists in ${registryPath}" -Level "ERROR" -EventId 1053
                     $failedVerification = $true
                 }
             } catch {
-                Write-SetupLog -Message "Failed to verify removal of registry key '${key}' from ${registryPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1048
+                Write-SetupLog -Message "Failed to verify removal of registry key '${key}' from ${registryPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1054
                 throw
             }
         }
         if (-not $keysFound) {
-            Write-SetupLog -Message "No specified registry keys (Username, Password) were found in ${registryPath}" -Level "WARNING" -EventId 1049
+            Write-SetupLog -Message "No specified registry keys (Username, Password) were found in ${registryPath}" -Level "WARNING" -EventId 1055
         } elseif (-not $failedVerification) {
-            Write-SetupLog -Message "Verified: Specified registry keys (Username, Password) no longer exist in ${registryPath}" -EventId 1050
+            Write-SetupLog -Message "Verified: Specified registry keys (Username, Password) no longer exist in ${registryPath}" -EventId 1056
         } else {
             throw "Registry key removal verification failed"
         }
     } catch {
-        Write-SetupLog -Message "Registry cleanup failed: $($_.Exception.Message)" -Level "ERROR" -EventId 1051
+        Write-SetupLog -Message "Registry cleanup failed: $($_.Exception.Message)" -Level "ERROR" -EventId 1057
         throw
     }
 }
@@ -422,110 +475,101 @@ try {
     # Log environment information
     $hostName = $Host.Name
     $psVersion = $PSVersionTable.PSVersion.ToString()
-    Write-SetupLog -Message "Running in console host: $hostName, PowerShell version: $psVersion" -EventId 1050
+    Write-SetupLog -Message "Running in console host: $hostName, PowerShell version: $psVersion" -EventId 1058
     if ($hostName -eq "Windows PowerShell ISE Host") {
-        Write-SetupLog -Message "Warning: Running in PowerShell ISE. For optimal prompt display, run this script in powershell.exe (ConsoleHost)." -Level "WARNING" -EventId 1051
+        Write-SetupLog -Message "Warning: Running in PowerShell ISE. For optimal prompt display, run this script in powershell.exe (ConsoleHost)." -Level "WARNING" -EventId 1059
     }
+
+    # Initialize required folders and check for files
+    Initialize-FoldersAndFiles
 
     # Check and install Web-CertProvider feature if not present
     $webCertProviderFeature = Get-WindowsFeature -Name Web-CertProvider -ErrorAction SilentlyContinue
     if ($webCertProviderFeature -and $webCertProviderFeature.Installed) {
-        Write-SetupLog -Message "Web-CertProvider feature is already installed." -EventId 1052
+        Write-SetupLog -Message "Web-CertProvider feature is already installed." -EventId 1060
     } else {
-        Write-SetupLog -Message "Web-CertProvider feature not found or not installed. Attempting to install via Install-WindowsFeature Web-CertProvider." -EventId 1053
+        Write-SetupLog -Message "Web-CertProvider feature not found or not installed. Attempting to install via Install-WindowsFeature Web-CertProvider." -EventId 1061
         try {
             $installResult = Install-WindowsFeature -Name Web-CertProvider -ErrorAction Stop
-            Write-SetupLog -Message "Install-WindowsFeature Web-CertProvider result: Success=$($installResult.Success), RestartNeeded=$($installResult.RestartNeeded), ExitCode=$($installResult.ExitCode)" -EventId 1054
+            Write-SetupLog -Message "Install-WindowsFeature Web-CertProvider result: Success=$($installResult.Success), RestartNeeded=$($installResult.RestartNeeded), ExitCode=$($installResult.ExitCode)" -EventId 1062
         } catch {
-            Write-SetupLog -Message "Failed to install Web-CertProvider feature: $($_.Exception.Message)" -Level "ERROR" -EventId 1055
-            Write-SetupLog -Message "In an air-gapped environment, ensure the Windows Server installation media is mounted and run 'Install-WindowsFeature Web-CertProvider -Source <path_to_source>'. Alternatively, ensure the WebAdministration module is available." -Level "ERROR" -EventId 1056
+            Write-SetupLog -Message "Failed to install Web-CertProvider feature: $($_.Exception.Message)" -Level "ERROR" -EventId 1063
+            Write-SetupLog -Message "In an air-gapped environment, ensure the Windows Server installation media is mounted and run 'Install-WindowsFeature Web-CertProvider -Source <path_to_source>'. Alternatively, ensure the WebAdministration module is available." -Level "ERROR" -EventId 1064
             throw "Web-CertProvider feature installation failed"
         }
     }
 
     # Check for WebAdministration module and Enable-WebCentralCertProvider cmdlet
     if (-not (Get-Module -ListAvailable -Name WebAdministration)) {
-        Write-SetupLog -Message "WebAdministration module not found." -Level "ERROR" -EventId 1057
-        Write-SetupLog -Message "The WebAdministration module is required for CCS configuration. Ensure the Web-CertProvider feature is installed and the module is available at C:\Windows\system32\WindowsPowerShell\v1.0\Modules\WebAdministration. In an air-gapped environment, transfer the module from an internet-connected machine." -Level "ERROR" -EventId 1058
+        Write-SetupLog -Message "WebAdministration module not found." -Level "ERROR" -EventId 1065
+        Write-SetupLog -Message "The WebAdministration module is required for CCS configuration. Ensure the Web-CertProvider feature is installed and the module is available at C:\Windows\system32\WindowsPowerShell\v1.0\Modules\WebAdministration. In an air-gapped environment, transfer the module from an internet-connected machine." -Level "ERROR" -EventId 1066
         throw "WebAdministration module not installed"
     }
     try {
         Import-Module WebAdministration -Force -ErrorAction Stop
         if (-not (Get-Command -Name Enable-WebCentralCertProvider -ErrorAction SilentlyContinue)) {
-            Write-SetupLog -Message "Enable-WebCentralCertProvider cmdlet not found in WebAdministration module." -Level "ERROR" -EventId 1059
-            Write-SetupLog -Message "The Enable-WebCentralCertProvider cmdlet is required for CCS configuration. Ensure the Web-CertProvider feature is installed correctly and the WebAdministration module is up to date." -Level "ERROR" -EventId 1060
+            Write-SetupLog -Message "Enable-WebCentralCertProvider cmdlet not found in WebAdministration module." -Level "ERROR" -EventId 1067
+            Write-SetupLog -Message "The Enable-WebCentralCertProvider cmdlet is required for CCS configuration. Ensure the Web-CertProvider feature is installed correctly and the WebAdministration module is up to date." -Level "ERROR" -EventId 1068
             throw "Enable-WebCentralCertProvider cmdlet not found"
         }
-        Write-SetupLog -Message "WebAdministration module and Enable-WebCentralCertProvider cmdlet verified." -EventId 1061
+        Write-SetupLog -Message "WebAdministration module and Enable-WebCentralCertProvider cmdlet verified." -EventId 1069
     } catch {
-        Write-SetupLog -Message "Failed to import WebAdministration module: $($_.Exception.Message)" -Level "ERROR" -EventId 1062
+        Write-SetupLog -Message "Failed to import WebAdministration module: $($_.Exception.Message)" -Level "ERROR" -EventId 1070
         throw
-    }
-
-    # Ensure log directory exists with correct permissions
-    if (-not (Test-Path $TempLogDir)) {
-        try {
-            New-Item -Path $TempLogDir -ItemType Directory -Force | Out-Null
-            icacls $TempLogDir /grant "NT AUTHORITY\SYSTEM:(OI)(CI)(F)" /grant "Administrators:(OI)(CI)(F)" | Out-Null
-            Write-SetupLog -Message "Created log directory: ${TempLogDir} with SYSTEM and Administrators permissions" -EventId 1063
-        } catch {
-            Write-SetupLog -Message "Failed to create log directory ${TempLogDir}: $($_.Exception.Message)" -Level "ERROR" -EventId 1064
-            throw
-        }
     }
 
     # Prompt for ExportScriptPath if not provided
     if (-not $ExportScriptPath) {
-        Write-SetupLog -Message "Prompting for export script path" -EventId 1065
+        Write-SetupLog -Message "Prompting for export script path" -EventId 1071
         $ExportScriptPath = Read-Host -Prompt "Enter the full path to the export script (e.g., C:\Scripts\Export_Cert_CCS_Secure.ps1)"
         if (-not $ExportScriptPath) {
-            Write-SetupLog -Message "Export script path is required" -Level "ERROR" -EventId 1066
+            Write-SetupLog -Message "Export script path is required" -Level "ERROR" -EventId 1072
             throw "Export script path not provided"
         }
-        Write-SetupLog -Message "Export script path set to: ${ExportScriptPath}" -EventId 1067
+        Write-SetupLog -Message "Export script path set to: ${ExportScriptPath}" -EventId 1073
     }
 
     # Prompt for PfxPassword if not provided
     if (-not $PfxPassword) {
-        Write-SetupLog -Message "Prompting for PFX password" -EventId 1068
+        Write-SetupLog -Message "Prompting for PFX password" -EventId 1074
         $PfxPassword = Read-Host -AsSecureString -Prompt "Enter the PFX password"
         if (-not $PfxPassword) {
-            Write-SetupLog -Message "PFX password is required" -Level "ERROR" -EventId 1069
+            Write-SetupLog -Message "PFX password is required" -Level "ERROR" -EventId 1075
             throw "PFX password not provided"
         }
-        Write-SetupLog -Message "Received PFX password" -EventId 1070
+        Write-SetupLog -Message "Received PFX password" -EventId 1076
     }
 
     # Prompt for NupkgPath if CredentialManager module is missing
     if (-not (Get-Module -ListAvailable -Name CredentialManager)) {
-        Write-SetupLog -Message "Prompting for CredentialManager .nupkg path" -EventId 1071
+        Write-SetupLog -Message "Prompting for CredentialManager .nupkg path" -EventId 1077
         $NupkgPath = Read-Host -Prompt "CredentialManager module not found. Enter the path to the CredentialManager .nupkg file (e.g., C:\Temp\credentialmanager.2.0.0.nupkg)"
         if (-not $NupkgPath -or -not (Test-Path $NupkgPath)) {
-            Write-SetupLog -Message "CredentialManager .nupkg file not found at ${NupkgPath}" -Level "ERROR" -EventId 1072
+            Write-SetupLog -Message "CredentialManager .nupkg file not found at ${NupkgPath}" -Level "ERROR" -EventId 1078
             throw "CredentialManager .nupkg file not found"
         }
-        Write-SetupLog -Message "Received NupkgPath: ${NupkgPath}" -EventId 1073
+        Write-SetupLog -Message "Received NupkgPath: ${NupkgPath}" -EventId 1079
         try {
             $modulePath = "C:\Program Files\WindowsPowerShell\Modules\CredentialManager"
             $tempZipPath = [System.IO.Path]::ChangeExtension($NupkgPath, ".zip")
-            Write-SetupLog -Message "Copying .nupkg file to temporary .zip file: ${tempZipPath}" -EventId 1074
+            Write-SetupLog -Message "Copying .nupkg file to temporary .zip file: ${tempZipPath}" -EventId 1080
             Copy-Item -Path $NupkgPath -Destination $tempZipPath -Force -ErrorAction Stop
             New-Item -Path $modulePath -ItemType Directory -Force | Out-Null
             Expand-Archive -Path $tempZipPath -DestinationPath $modulePath -Force -ErrorAction Stop
-            Write-SetupLog -Message "Installed CredentialManager module to ${modulePath}" -EventId 1075
+            Write-SetupLog -Message "Installed CredentialManager module to ${modulePath}" -EventId 1081
             Remove-Item -Path $tempZipPath -Force -ErrorAction SilentlyContinue
-            Write-SetupLog -Message "Removed temporary .zip file: ${tempZipPath}" -EventId 1076
+            Write-SetupLog -Message "Removed temporary .zip file: ${tempZipPath}" -EventId 1082
         } catch {
-            Write-SetupLog -Message "Failed to install CredentialManager module from ${NupkgPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1077
+            Write-SetupLog -Message "Failed to install CredentialManager module from ${NupkgPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1083
             throw
         }
     }
 
     try {
         Import-Module CredentialManager -ErrorAction Stop
-        Write-SetupLog -Message "Imported CredentialManager module" -EventId 1078
+        Write-SetupLog -Message "Imported CredentialManager module" -EventId 1084
     } catch {
-        Write-SetupLog -Message "Failed to import CredentialManager module: $($_.Exception.Message)" -Level "ERROR" -EventId 1079
+        Write-SetupLog -Message "Failed to import CredentialManager module: $($_.Exception.Message)" -Level "ERROR" -EventId 1085
         throw
     }
 
@@ -535,9 +579,9 @@ try {
         $maskedPassword = if ($plainPassword.Length -le 2) { "*" * $plainPassword.Length } else { $plainPassword[0] + "*" * ($plainPassword.Length - 2) + $plainPassword[-1] }
         Remove-StoredCredential -Target 'PFXCertPassword' -ErrorAction SilentlyContinue
         New-StoredCredential -Target 'PFXCertPassword' -UserName 'PFXUser' -Password $plainPassword -Persist LocalMachine -ErrorAction Stop
-        Write-SetupLog -Message "Stored PFX password in Credential Manager (masked): ${maskedPassword}" -EventId 1080
+        Write-SetupLog -Message "Stored PFX password in Credential Manager (masked): ${maskedPassword}" -EventId 1086
     } catch {
-        Write-SetupLog -Message "Failed to store PFX password in Credential Manager: $($_.Exception.Message)" -Level "ERROR" -EventId 1081
+        Write-SetupLog -Message "Failed to store PFX password in Credential Manager: $($_.Exception.Message)" -Level "ERROR" -EventId 1087
         throw
     }
 
@@ -545,20 +589,20 @@ try {
     $registryPath = "HKLM:\SOFTWARE\Microsoft\IIS\CentralCertProvider"
     try {
         $registryValues = Get-ItemProperty -Path $registryPath -ErrorAction Stop
-        Write-SetupLog -Message "CCS registry key found: Enabled=$($registryValues.Enabled), CertStoreLocation=$($registryValues.CertStoreLocation)" -EventId 1082
+        Write-SetupLog -Message "CCS registry key found: Enabled=$($registryValues.Enabled), CertStoreLocation=$($registryValues.CertStoreLocation)" -EventId 1088
         if ($registryValues.Enabled -ne 1 -or $registryValues.CertStoreLocation -ne $CcsPhysicalPath) {
-            Write-SetupLog -Message "CCS registry key values are incorrect (Enabled=$($registryValues.Enabled), CertStoreLocation=$($registryValues.CertStoreLocation)). Expected Enabled=1 and CertStoreLocation=$CcsPhysicalPath" -Level "ERROR" -EventId 1083
+            Write-SetupLog -Message "CCS registry key values are incorrect (Enabled=$($registryValues.Enabled), CertStoreLocation=$($registryValues.CertStoreLocation)). Expected Enabled=1 and CertStoreLocation=$CcsPhysicalPath" -Level "ERROR" -EventId 1089
             throw "CCS registry configuration is invalid"
         }
     } catch {
-        Write-SetupLog -Message "CCS registry key not found at ${registryPath}. Creating key." -Level "WARNING" -EventId 1084
+        Write-SetupLog -Message "CCS registry key not found at ${registryPath}. Creating key." -Level "WARNING" -EventId 1090
         try {
             New-Item -Path $registryPath -Force | Out-Null
             Set-ItemProperty -Path $registryPath -Name "Enabled" -Value 1 -Type DWord -ErrorAction Stop
             Set-ItemProperty -Path $registryPath -Name "CertStoreLocation" -Value $CcsPhysicalPath -Type String -ErrorAction Stop
-            Write-SetupLog -Message "Created CCS registry key: Enabled=1, CertStoreLocation=$CcsPhysicalPath" -EventId 1085
+            Write-SetupLog -Message "Created CCS registry key: Enabled=1, CertStoreLocation=$CcsPhysicalPath" -EventId 1091
         } catch {
-            Write-SetupLog -Message "Failed to configure CCS registry at ${registryPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1086
+            Write-SetupLog -Message "Failed to configure CCS registry at ${registryPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1092
             throw
         }
     }
@@ -569,12 +613,12 @@ try {
     # Verify CCS path accessibility
     try {
         if (-not (Test-Path $CcsPhysicalPath)) {
-            Write-SetupLog -Message "CCS path ${CcsPhysicalPath} is not accessible" -Level "ERROR" -EventId 1087
+            Write-SetupLog -Message "CCS path ${CcsPhysicalPath} is not accessible" -Level "ERROR" -EventId 1093
             throw "CCS path inaccessible"
         }
-        Write-SetupLog -Message "CCS path ${CcsPhysicalPath} is accessible" -EventId 1088
+        Write-SetupLog -Message "CCS path ${CcsPhysicalPath} is accessible" -EventId 1094
     } catch {
-        Write-SetupLog -Message "Error accessing CCS path ${CcsPhysicalPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1089
+        Write-SetupLog -Message "Error accessing CCS path ${CcsPhysicalPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1095
         throw
     }
 
@@ -613,23 +657,23 @@ try {
         $folder = $taskService.GetFolder("\")
         try {
             $folder.RegisterTaskDefinition($TaskName, $taskDefinition, 6, $null, $null, 3) | Out-Null
-            Write-SetupLog -Message "Registered new scheduled task: ${TaskName}" -EventId 1090
+            Write-SetupLog -Message "Registered new scheduled task: ${TaskName}" -EventId 1096
         } catch {
-            Write-SetupLog -Message "Updating existing scheduled task: ${TaskName}" -EventId 1091
+            Write-SetupLog -Message "Updating existing scheduled task: ${TaskName}" -EventId 1097
             $folder.RegisterTaskDefinition($TaskName, $taskDefinition, 4, $null, $null, 3) | Out-Null
         }
     } catch {
-        Write-SetupLog -Message "Failed to register or update scheduled task ${TaskName}: $($_.Exception.Message)" -Level "ERROR" -EventId 1092
+        Write-SetupLog -Message "Failed to register or update scheduled task ${TaskName}: $($_.Exception.Message)" -Level "ERROR" -EventId 1098
         throw
     }
 
     # Verify scheduled task
     try {
         $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        Write-SetupLog -Message "Verified scheduled task '${TaskName}' exists" -EventId 1093
+        Write-SetupLog -Message "Verified scheduled task '${TaskName}' exists" -EventId 1099
         Log-TaskSchedulerEvents -TaskName $TaskName
     } catch {
-        Write-SetupLog -Message "Failed to verify scheduled task '${TaskName}': $($_.Exception.Message)" -Level "ERROR" -EventId 1094
+        Write-SetupLog -Message "Failed to verify scheduled task '${TaskName}': $($_.Exception.Message)" -Level "ERROR" -EventId 1100
         throw
     }
 
@@ -639,15 +683,15 @@ try {
     Test-MinimalSystemPowerShell -LogDir $writableDir
     Test-PowerShellError -LogDir $writableDir
     if (-not (Test-SystemWritePermission -Path $writableDir)) {
-        Write-SetupLog -Message "SYSTEM write permission test to ${writableDir} failed" -Level "ERROR" -EventId 1095
+        Write-SetupLog -Message "SYSTEM write permission test to ${writableDir} failed" -Level "ERROR" -EventId 1101
         throw "SYSTEM write permission test failed"
     }
 
     # Clean up Username and Password registry keys
     Remove-CCSRegistryKeys
 
-    Write-SetupLog -Message "Setup completed successfully" -EventId 1096
+    Write-SetupLog -Message "Setup completed successfully" -EventId 1102
 } catch {
-    Write-SetupLog -Message "Setup failed: $($_.Exception.Message)" -Level "ERROR" -EventId 1097
+    Write-SetupLog -Message "Setup failed: $($_.Exception.Message)" -Level "ERROR" -EventId 1103
     throw
 }
