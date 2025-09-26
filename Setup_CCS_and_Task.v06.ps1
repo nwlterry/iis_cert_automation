@@ -271,7 +271,6 @@ try {
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
         Write-SetupLog -Message "Registered minimal test task ${testTaskName} to verify SYSTEM execution" -EventId 1024
-        Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
         Start-Sleep -Seconds 60
         Log-TaskSchedulerEvents -TaskName $testTaskName
         if (Test-Path $testLog) {
@@ -324,7 +323,6 @@ try {
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $testTaskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
         Write-SetupLog -Message "Registered test task ${testTaskName} to verify PowerShell error logging" -EventId 1030
-        Start-ScheduledTask -TaskName $testTaskName -ErrorAction Stop
         Start-Sleep -Seconds 60
         Log-TaskSchedulerEvents -TaskName $testTaskName
         if (Test-Path $testLog) {
@@ -341,7 +339,7 @@ try {
     }
 }
 
-# Function to run IIS Manager and wait for configuration
+# Function to run IIS Manager and wait for user input
 function Start-IISManager {
     try {
         $iisManagerPath = "$env:windir\system32\inetsrv\inetmgr.exe"
@@ -351,8 +349,8 @@ function Start-IISManager {
         }
         Write-SetupLog -Message "Starting IIS Manager (${iisManagerPath})" -EventId 1035
         $process = Start-Process -FilePath $iisManagerPath -PassThru -ErrorAction Stop
-        Write-SetupLog -Message "Non-interactive session: Waiting 60 seconds for IIS Manager to initialize" -EventId 1037
-        Start-Sleep -Seconds 60
+        Write-SetupLog -Message "Waiting for user to configure IIS Manager and press Enter" -EventId 1037
+        $null = Read-Host -Prompt "Press Enter to continue after configuring IIS Manager"
         if (-not $process.HasExited) {
             Write-SetupLog -Message "Terminating IIS Manager process (PID: $($process.Id))" -EventId 1038
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
