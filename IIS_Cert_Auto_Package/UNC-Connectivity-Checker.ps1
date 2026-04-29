@@ -5,6 +5,7 @@ $source  = "UNC-Connectivity-Checker"        # Custom event source name
 $logName = "Application"                     # Standard log
 $logFolder  = "C:\Logs"                      # Folder for logs
 $daysToKeep = 14                             # Keep logs for 14 days
+$drivveLetter = E                            # ? Replace with your map drive drive letter
 
 # Build today's log file name (date only: 2026-01-27.log)
 $today      = Get-Date -Format "yyyy-MM-dd"
@@ -108,7 +109,7 @@ else {
     
     # Attempt reconnect (using computer account)
     try {
-        net use F: $uncPath 2>$null
+        net use $($driveLetter): $uncPath 2>$null
         $msg = "Reconnected to $uncPath."
         Write-LogEvent -Message $msg -EntryType Information -EventId 1003
         Write-LogFile $msg
