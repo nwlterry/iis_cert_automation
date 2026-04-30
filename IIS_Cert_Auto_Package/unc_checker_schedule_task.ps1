@@ -1,4 +1,4 @@
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Scripts\UNC-Connectivity-Checker.ps1"'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Scripts\unc_connectivity_checker.ps1"'
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $tempTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1)
 $trigger.Repetition = $tempTrigger.Repetition
