@@ -1,3 +1,5 @@
+﻿# Define variables
+$uncPath = "\\labwinadm01.devops.local\ACME_Share"                  # ? Replace with your UNC path
 $testPath = "E:\ACME-ADCS"                   # ? Replace with your mapped path
 $server  = ($uncPath -split '\\')[2]         # Extracts server name
 $source  = "UNC-Connectivity-Checker"        # Custom event source name
