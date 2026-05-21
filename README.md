@@ -1,22 +1,24 @@
-# iis_cert_autonmation
+# IIS Certificate Automation (CCS)
 
-Quick start — runtime QA
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue)](https://github.com/nwlterry/iis_cert_automation)
+[![Windows Server](https://img.shields.io/badge/Windows_Server-2019%2F2022-green)]()
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-This repository provides PowerShell tooling to export IIS certificates into a Centralized Certificate Store (CCS), configure IIS CCS and a SYSTEM scheduled task, and helper utilities.
+**Automate export of IIS certificates to a Centralized Certificate Store (CCS) + configure IIS + SYSTEM scheduled task.**
 
-Quick runnable check: use the runtime QA helper to validate registry, UNC access, SYSTEM write, and export-script presence:
+## Features
+
+- Export certificates from `Cert:\LocalMachine\My` → UNC CCS share as `.pfx` files.
+- Configure IIS CentralCertProvider registry + install required features.
+- Register scheduled task triggered by certificate renewal events (runs as `NT AUTHORITY\SYSTEM`).
+- Secure credential handling (PFX password stored for SYSTEM via `cmdkey`).
+- UNC connectivity monitoring with auto-reconnect & log rotation.
+- Runtime QA checks for registry, permissions, and SYSTEM write access.
+
+## Quick Start – Runtime QA
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File IIS_Cert_Auto_Package\Runtime_QA_Check.ps1 \
-	-CcsPath "\\file-server\IIS_Cert_Store" \
-	-ExportScriptPath "C:\Scripts\Export_Cert_CCS_Secure.ps1" \
-	-TempLogDir "C:\Logs"
-```
-
-What it verifies:
-- CCS registry key and configured `CertStoreLocation`
-- UNC/CCS path accessibility
-- SYSTEM account write capability (via temporary scheduled task)
-- Presence of the export script
-
-See `.github/copilot-instructions.md` for AI agent guidance and the `IIS_Cert_Auto_Package` folder for helpers.
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/Runtime-QA-Check.ps1 `
+  -CcsPath "\\file-server\IIS_Cert_Store" `
+  -ExportScriptPath "C:\Scripts\Export-Cert-CCS-Secure.ps1" `
+  -TempLogDir "C:\Logs" -CheckIISBindings
