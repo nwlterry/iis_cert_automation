@@ -76,39 +76,3 @@ Contributions welcome! Please open an issue or PR. See [copilot-instructions.md]
 ## Author
 
 Created by [nwlterry](https://github.com/nwlterry).
-```
-
-### 3. Other Repository Settings & Requirements
-
-- **Repository "About" section** (GitHub repo settings):
-  - **Description**: "PowerShell tools to export IIS certificates to Centralized Certificate Store (CCS), configure IIS, and run renewal tasks as SYSTEM."
-  - **Topics/tags**: `iis`, `powershell`, `certificate`, `ccs`, `automation`, `windows-server`, `pki`
-  - **Website** (optional): Link to a docs page if you add one.
-  - **Template**: Add a short repo description.
-
-- **LICENSE file**: Add a standard `MIT` or `GPL-3.0` license via GitHub (Settings → Manage access or create `LICENSE` file). MIT is common for scripts.
-
-- **CHANGELOG.md**: Add one tracking major versions (e.g., v1.0 – Initial CCS export).
-
-- **Releases**: Create a v1.0 release with a ZIP of `src/` + `tools/` (exclude old versions).
-
-- **.gitignore** example:
-  ```
-  *.log
-  *.pfx
-  *.tmp
-  archive/
-  *.xlsx
-  ```
-
-- **Make it a PowerShell Module** (future enhancement): Wrap in a `.psm1` + manifest for easier installation (`Install-Module`).
-
-### Next Steps Summary
-1. Refactor file structure as proposed (use Git moves to preserve history).
-2. Update README.md with the version above.
-3. Add LICENSE + CHANGELOG.
-4. Archive old versioned scripts.
-5. Update links in `copilot-instructions.md` and other docs to match new paths.
-6. Test everything after changes.
-
-This will make the repo much more professional, discoverable, and maintainable. Let me know if you want me to generate specific files (e.g., full LICENSE, updated script headers, or a module manifest)!
