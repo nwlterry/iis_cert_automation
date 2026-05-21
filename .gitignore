@@ -1,0 +1,7 @@
+*.log
+*.pfx
+*.tmp
+Thumbs.db
+*.xlsx
+archive/
+old-package/
