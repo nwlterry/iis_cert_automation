@@ -717,6 +717,8 @@ try {
         try {
             $testFile = "${testDir}\TestCredentialAccess_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
             $testScript = "C:\Temp\TestCredentialAccess_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').ps1"
+            Assert-SafeTaskPath $testFile
+            Assert-SafeTaskPath $testScript
             $psCommand = @"
 Import-Module CredentialManager
 try {
@@ -731,7 +733,7 @@ try {
 }
 "@
             Set-Content -Path $testScript -Value $psCommand -Force
-            icacls $testScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
+            Set-TightFileAcl -Path $testScript
             Write-SetupLog -Message "Created test script ${testScript} for SYSTEM credential access verification" -EventId 1086
             $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy RemoteSigned -File `"${testScript}`""
             $taskPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest

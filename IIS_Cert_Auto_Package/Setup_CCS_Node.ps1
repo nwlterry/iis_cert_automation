@@ -15,13 +15,16 @@
 
 param (
     [Parameter(Mandatory=$true)]
-    [string]$CcsPhysicalPath,  # UNC path to the CCS file share, e.g., "\\ocp-lab-srv-1.ocplab.net\IIS_Central_Cert_Store\Cert-IIS01-IIS02"
+    [string]$CcsPhysicalPath,  # UNC path to the CCS file share, e.g., "\\fileserver.example\IIS_Cert_Store"
 
     [Parameter(Mandatory=$false)]
     [string]$TempLogDir = "C:\Logs"  # Directory for log files (default to C:\Logs)
 )
 
 # Define logging configuration
+. (Join-Path $PSScriptRoot "Security.Common.ps1")
+Assert-SafeTaskPath $CcsPhysicalPath
+Assert-SafeTaskPath $TempLogDir
 $currentDate = Get-Date -Format "yyyyMMdd_HHmmss"
 $hostname = [System.Net.Dns]::GetHostName()
 $logPath = Join-Path -Path $TempLogDir -ChildPath "Setup_CCS_Node_${hostname}_${currentDate}.log"

@@ -32,12 +32,15 @@ $source      = "UNC-Connectivity-Checker"
 $logName     = "Application"
 $logFolder   = if ($cfg.logDirectory) { [string]$cfg.logDirectory } else { "C:\Logs" }
 $daysToKeep  = 14
+Assert-SafeTaskPath $logFolder
+$today       = Get-Date -Format "yyyy-MM-dd"
+$logFile     = Join-Path $logFolder "UNC_Check_$today.log"
 
 # ── Log Rotation ─────────────────────────────────────
 $cutoffDate = (Get-Date).AddDays(-$daysToKeep)
 
 if (Test-Path $logFolder) {
-    Get-ChildItem -Path $logFolder -File -Filter "*.log" -ErrorAction SilentlyContinue |
+    Get-ChildItem -Path $logFolder -File -Filter "UNC_Check_*.log" -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -lt $cutoffDate } |
         ForEach-Object {
             try {

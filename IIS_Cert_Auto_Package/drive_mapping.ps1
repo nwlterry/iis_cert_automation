@@ -19,6 +19,7 @@ $source  = "Drive Mapping UNC Path"
 $logName = "Application"
 $logFolder  = if ($cfg.logDirectory) { [string]$cfg.logDirectory } else { "C:\Logs" }
 $daysToKeep = 14
+Assert-SafeTaskPath $logFolder
 
 # Build today's log file name (date only: 2026-01-27.log)
 $today      = Get-Date -Format "yyyy-MM-dd"
@@ -31,7 +32,7 @@ $cutoffDate = (Get-Date).AddDays(-$daysToKeep)
 if (Test-Path $logFolder) {
     Get-ChildItem -Path $logFolder `
                   -File `
-                  -Filter "*.log" `
+                  -Filter "UNC_Check_*.log" `
                   -ErrorAction SilentlyContinue `
     | Where-Object { $_.LastWriteTime -lt $cutoffDate } `
     | ForEach-Object {

@@ -4,7 +4,7 @@
 # Exports separate PFX files for each SNI hostname (e.g., example.com.pfx) and each node hostname (e.g., node1.pfx).
 # Existing PFX files in the CCS path are backed up with a timestamp before overwriting, keeping only the 3 most recent backups per CN.
 # The exported PFX file is verified to ensure validity.
-# The retrieved PFX password is logged in a masked format for troubleshooting.
+# The password value is never written to the log or the event log.
 # Logs all actions to a file under C:\Logs with full timestamp and to the Windows Event Log (Application log, source: CertificateExport).
 # Includes enhanced error handling for export, file write, and event log operations, increased retries, and robust fallback logic.
 # Designed for an air-gapped environment running Windows PowerShell 5.1 (Windows Server 2019/2022).
