@@ -3,26 +3,35 @@
 # Updated per your request
 # =====================================================
 
-# ── Configuration ─────────────────────────────────────
-$uncPath     = "\\labwinadm01.devops.local\ACME_Share"   # Replace with your UNC path
-$testPath    = "E:\ACME-ADCS"                            # Mapped drive path
-$driveLetter = "E"                                       # Drive letter used
+# Site values come from iis-cert-automation.config.json. Do not hardcode UNC paths or passwords.
+param(
+    [string]$ConfigPath = $(Join-Path $PSScriptRoot "iis-cert-automation.config.json")
+)
+. (Join-Path $PSScriptRoot "Security.Common.ps1")
+$cfg = Import-AutomationConfig -ConfigPath $ConfigPath
+$uncPath = [string]$cfg.uncPath
+$testPath = [string]$cfg.mappedTestPath
+$driveLetter = [string]$cfg.mappedDrive
+if (-not $uncPath -or -not $testPath -or -not $driveLetter) {
+    throw "Config requires uncPath, mappedTestPath, and mappedDrive."
+}
+Assert-SafeTaskPath $uncPath
+Assert-SafeTaskPath $testPath
+if ($driveLetter -notmatch '^[A-Za-z]$') { throw "mappedDrive must be a single letter." }
 
 $server      = ($uncPath -split '\\')[2]
-
-# IIS Health Check
-$healthUrl   = "https://localhost/"                      # Change to your actual site URL / health endpoint
-$maxRetries  = 10                                        # Max IISreset + curl attempts
-$retryDelay  = 5                                         # Seconds between retries
-
-# Logging
+$healthUrl   = if ($cfg.healthUrl) { [string]$cfg.healthUrl } else { "https://localhost/" }
+$allowInsecure = $false
+if ($cfg.PSObject.Properties.Name -contains "allowInsecureHealthCheck") {
+    $allowInsecure = [bool]$cfg.allowInsecureHealthCheck
+}
+if ($healthUrl -notmatch '^https://[^\s''"`]+$') { throw "healthUrl must be an https URL with no spaces or quotes." }
+$maxRetries  = 10
+$retryDelay  = 5
 $source      = "UNC-Connectivity-Checker"
 $logName     = "Application"
-$logFolder   = "C:\Logs"
+$logFolder   = if ($cfg.logDirectory) { [string]$cfg.logDirectory } else { "C:\Logs" }
 $daysToKeep  = 14
-
-$today       = Get-Date -Format "yyyy-MM-dd"
-$logFile     = Join-Path $logFolder "UNC_Check_$today.log"
 
 # ── Log Rotation ─────────────────────────────────────
 $cutoffDate = (Get-Date).AddDays(-$daysToKeep)
@@ -117,7 +126,13 @@ while (-not $success -and $attempt -lt $maxRetries) {
         Start-Sleep -Seconds 3   # Give IIS a moment to start responding
 
         # Perform curl test
-        $curlOutput = curl.exe -s -o NUL -w "%{http_code}" -k $healthUrl 2>&1
+        $curlArgs = @("-s", "-o", "NUL", "-w", "%{http_code}")
+        if ($allowInsecure) {
+            Write-LogFile "WARNING: TLS certificate validation disabled for health check by config."
+            $curlArgs += "-k"
+        }
+        $curlArgs += $healthUrl
+        $curlOutput = & curl.exe @curlArgs 2>&1
         $httpCode = $curlOutput.Trim()
 
         Write-LogFile "Curl health check returned HTTP code: $httpCode"

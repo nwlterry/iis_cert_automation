@@ -1,3 +1,5 @@
+#requires -Version 99.0
+# Archived copy disabled after the 2026-10-29 security review. Do not deploy.
 # PowerShell script to enable IIS Centralized Certificate Store (CCS) via registry, store PFX password in Credential Manager as SYSTEM,
 # and set up a scheduled task to trigger on certificate renewal event (Event ID 1001 in Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational)
 # and execute the provided export script (Export_Cert_CCS_Secure.ps1).
@@ -222,7 +224,7 @@ try {
         Set-Content -Path $tempScript -Value $psCommand -Force
         icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
         Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}"
-        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`" > ${testLog} 2>&1"
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File `"${tempScript}`" > ${testLog} 2>&1"
         $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${testCommand}"
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestMinimalSystem"
@@ -275,7 +277,7 @@ try {
         Set-Content -Path $tempScript -Value $psCommand -Force
         icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
         Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}"
-        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`" > ${testLog} 2>&1"
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File `"${tempScript}`" > ${testLog} 2>&1"
         $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${testCommand}"
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestPowerShellError"
@@ -337,7 +339,7 @@ try {
         Set-Content -Path $tempScript -Value $psCommand -Force
         icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
         Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}"
-        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`" > ${testLog} 2>&1"
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File `"${tempScript}`" > ${testLog} 2>&1"
         $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c ${testCommand}"
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestPowerShellEnv"
@@ -650,7 +652,7 @@ try {
         $trigger.Enabled = $true
         $action = $taskDefinition.Actions.Create(0) # 0 = Execute action
         $action.Path = "cmd.exe"
-        $action.Arguments = "/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ExportScriptPath`""
+        $action.Arguments = "/c powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File `"$ExportScriptPath`""
         $principal = $taskDefinition.Principal
         $principal.UserId = "NT AUTHORITY\SYSTEM"
         $principal.LogonType = 3 # Service account

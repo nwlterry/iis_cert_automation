@@ -1,3 +1,5 @@
+#requires -Version 99.0
+# Archived copy disabled after the 2026-10-29 security review. Do not deploy.
 # PowerShell script to enable IIS Centralized Certificate Store (CCS) via registry without modifying existing settings,
 # store PFX password in Credential Manager as SYSTEM using CredentialManager module,
 # and set up a scheduled task to trigger on certificate renewal event (Event ID 1001 in Microsoft-Windows-CertificateServicesClient-Lifecycle-System/Operational)
@@ -17,7 +19,7 @@
 
 param (
     [Parameter(Mandatory=$true)]
-    [string]$CcsPhysicalPath,  # UNC path to the CCS file share, e.g., "\\ocp-lab-srv-1.ocplab.net\IIS_Central_Cert_Store\Cert-IIS01-IIS02"
+    [string]$CcsPhysicalPath,  # UNC path to the CCS file share, e.g., "\\host.example\IIS_Central_Cert_Store\Cert-IIS01-IIS02"
 
     #[Parameter(Mandatory=$false)]
     #[securestring]$PfxPassword,  # PFX password to store in Credential Manager as SYSTEM
@@ -187,7 +189,7 @@ function Find-SystemWritableDirectory {
             $acl = icacls $dir
             Write-SetupLog -Message "Permissions for ${dir}: $($acl -join ', ')" -EventId 1006
             $testFile = Join-Path -Path $dir -ChildPath "TestWrite_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt"
-            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"Set-Content -Path '${testFile}' -Value 'Test' -Force`""
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy RemoteSigned -Command `"Set-Content -Path '${testFile}' -Value 'Test' -Force`""
             $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
             $testTaskName = "TestWriteDir"
             Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -226,7 +228,7 @@ function Test-SystemWritePermission {
         # Sanitize path to avoid invalid characters
         $Path = [System.IO.Path]::GetFullPath($Path)
         $testFile = Join-Path -Path $Path -ChildPath "TestWrite_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"Set-Content -Path '${testFile}' -Value 'Test' -Force`""
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy RemoteSigned -Command `"Set-Content -Path '${testFile}' -Value 'Test' -Force`""
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestWritePermission"
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -262,7 +264,7 @@ function Test-MinimalSystemCmd {
             return
         }
         $testLog = Join-Path -Path $LogDir -ChildPath "MinimalSystemCmdTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"for (`$i = 0; `$i -lt 3; `$i++) { try { Set-Content -Path '${testLog}' -Value 'Test' -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 500; if (`$i -eq 2) { throw `$_.Exception } } }`""
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy RemoteSigned -Command `"for (`$i = 0; `$i -lt 3; `$i++) { try { Set-Content -Path '${testLog}' -Value 'Test' -Force -ErrorAction Stop; break } catch { Start-Sleep -Milliseconds 500; if (`$i -eq 2) { throw `$_.Exception } } }`""
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestMinimalSystemCmd"
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -323,7 +325,7 @@ try {
         Set-Content -Path $tempScript -Value $psCommand -Force
         icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
         Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}" -EventId 1023
-        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`""
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File `"${tempScript}`""
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $testCommand
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestMinimalSystem"
@@ -378,7 +380,7 @@ try {
         Set-Content -Path $tempScript -Value $psCommand -Force
         icacls $tempScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
         Write-SetupLog -Message "Set SYSTEM permissions on ${tempScript}" -EventId 1029
-        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"${tempScript}`""
+        $testCommand = "powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File `"${tempScript}`""
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $testCommand
         $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestPowerShellError"
@@ -599,7 +601,7 @@ try {
     # Store PFX password in Credential Manager as SYSTEM and verify
     try {
         $plainPassword = Convert-SecureStringToPlainText -SecureString $PfxPassword
-        $maskedPassword = if ($plainPassword.Length -le 2) { "*" * $plainPassword.Length } else { $plainPassword[0] + "*" * ($plainPassword.Length - 2) + $plainPassword[-1] }
+        $maskedPassword = "<redacted>"
         # Create temp script to store credential as SYSTEM
         $testDir = "C:\Logs"
         $testFile = "${testDir}\TestStoreCredential_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').log"
@@ -608,7 +610,7 @@ try {
 Import-Module CredentialManager
 try {
     Remove-StoredCredential -Target 'PFXCertPassword' -ErrorAction SilentlyContinue
-    New-StoredCredential -Target 'PFXCertPassword' -UserName 'PFXUser' -Password '${plainPassword}' -Persist LocalMachine -ErrorAction Stop
+    New-StoredCredential -Target 'PFXCertPassword' -UserName 'PFXUser' -Password $null # archived; credential embedding removed -Persist LocalMachine -ErrorAction Stop
     'Credential stored successfully' | Out-File -FilePath '${testFile}' -Append
 } catch {
     "Error: `$($_.Exception.Message)" | Out-File -FilePath '${testFile}' -Append
@@ -617,7 +619,7 @@ try {
         Set-Content -Path $testScript -Value $psCommand -Force
         icacls $testScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
         Write-SetupLog -Message "Created test script ${testScript} for SYSTEM credential storage" -EventId 1080
-        $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"${testScript}`""
+        $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy RemoteSigned -File `"${testScript}`""
         $taskPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
         $testTaskName = "TestStoreCredential"
         Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -662,7 +664,7 @@ try {
             Set-Content -Path $testScript -Value $psCommand -Force
             icacls $testScript /grant "NT AUTHORITY\SYSTEM:(F)" | Out-Null
             Write-SetupLog -Message "Created test script ${testScript} for SYSTEM credential access verification" -EventId 1086
-            $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"${testScript}`""
+            $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy RemoteSigned -File `"${testScript}`""
             $taskPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
             $testTaskName = "TestCredentialAccess"
             Unregister-ScheduledTask -TaskName $testTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -763,7 +765,7 @@ try {
         $startupTrigger.Enabled = $true
         $action = $taskDefinition.Actions.Create(0) # 0 = Execute action
         $action.Path = "powershell.exe"
-        $action.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ExportScriptPath`""
+        $action.Arguments = "-NoProfile -ExecutionPolicy RemoteSigned -File `"$ExportScriptPath`""
         $principal = $taskDefinition.Principal
         $principal.UserId = "NT AUTHORITY\SYSTEM"
         $principal.LogonType = 3 # Service account

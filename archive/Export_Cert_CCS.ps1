@@ -1,3 +1,5 @@
+#requires -Version 99.0
+# Archived copy disabled after the 2026-10-29 security review. Do not deploy.
 # Optimized PowerShell script to handle certificate export with date-based logging, event creation, and permission checks
 # Triggered by Event ID 1001 (certificate renewal)
 # Updated to use defined PFX password, get certificate file names from IIS SNI bindings,
@@ -10,7 +12,7 @@ $eventSource = "CertificateExportScript"
 $eventLogName = "Application"
 
 # Define default PFX base path and local fallback
-$defaultPfxBasePath = "\\ocp-lab-srv-1.ocplab.net\IIS_Central_Cert_Store\IIS-SRV5-SRV6"
+$defaultPfxBasePath = "\\host.example\IIS_Central_Cert_Store\IIS-SRV5-SRV6"
 $localFallbackPath = "C:\CertStore"
 
 # Define PFX password

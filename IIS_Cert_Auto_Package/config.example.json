@@ -1,0 +1,14 @@
+{
+  "ccsPhysicalPath": "\\\\fileserver.example\\IIS_Cert_Store",
+  "sniHostNames": ["www.example.com"],
+  "nodeHostNames": ["node1.example.com", "node1"],
+  "fileServer": "fileserver.example",
+  "uncPath": "\\\\fileserver.example\\Share",
+  "mappedDrive": "E",
+  "mappedTestPath": "E:\\Share",
+  "healthUrl": "https://localhost/",
+  "allowInsecureHealthCheck": false,
+  "logDirectory": "C:\\Logs",
+  "tempDirectory": "C:\\Temp",
+  "maxLogFiles": 5
+}

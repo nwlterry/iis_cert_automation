@@ -10,7 +10,7 @@
   - Checks that the export script exists
 
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\IIS_Cert_Auto_Package\Runtime_QA_Check.ps1 \
+  powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\IIS_Cert_Auto_Package\Runtime_QA_Check.ps1 \
     -CcsPath "\\\\file-server\\IIS_Cert_Store" -ExportScriptPath "C:\\Scripts\\Export_Cert_CCS_Secure.ps1" -TempLogDir "C:\\Logs"
 #>
 
@@ -30,7 +30,7 @@ function Write-Log {
 }
 
 function Test-RegistryCCS {
-    $reg = 'HKLM:\\SOFTWARE\\Microsoft\\IIS\\CentralCertProvider'
+    $reg = 'HKLM:\SOFTWARE\Microsoft\IIS\CentralCertProvider'
     try {
         $vals = Get-ItemProperty -Path $reg -ErrorAction Stop
         Write-Log "Found CCS registry key: Enabled=$($vals.Enabled), CertStoreLocation=$($vals.CertStoreLocation)"
@@ -125,9 +125,15 @@ function Test-SystemWrite {
             Write-Log "Created directory $Path"
         }
         $testFile = Join-Path -Path $Path -ChildPath "SysWriteTest_$(Get-Date -Format 'yyyyMMdd_HHmmss_fff').txt"
+        if ($testFile -match '[''"`$;&|<>\r\n]' -or $testFile.Length -gt 240) {
+            Write-Log "Refusing unsafe SYSTEM write probe path" 'ERROR'
+            return $false
+        }
         $taskName = "RuntimeQASysWrite_$(Get-Random)"
-        $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c echo OK > \"$testFile\""
-        $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+        $probe = Join-Path -Path $env:SystemRoot -ChildPath "Temp\RuntimeQASysWrite_$taskName.ps1"
+        Set-Content -LiteralPath $probe -Value "Set-Content -LiteralPath '$testFile' -Value 'OK' -Encoding ascii" -Encoding ASCII
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy RemoteSigned -File `"$probe`""
+        $principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -ErrorAction Stop | Out-Null
         Write-Log "Registered temporary task $taskName to write as SYSTEM"
@@ -136,15 +142,18 @@ function Test-SystemWrite {
         if (Test-Path -Path $testFile) {
             Write-Log "SYSTEM write test succeeded: $testFile"
             Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
             return $true
         } else {
             Write-Log "SYSTEM write test failed: $testFile" 'ERROR'
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
             return $false
         }
     } catch {
         Write-Log "Error during SYSTEM write test: $($_.Exception.Message)" 'ERROR'
+        if ($probe) { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
         return $false
     }

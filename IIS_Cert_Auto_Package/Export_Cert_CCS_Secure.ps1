@@ -8,17 +8,30 @@
 # Logs all actions to a file under C:\Logs with full timestamp and to the Windows Event Log (Application log, source: CertificateExport).
 # Includes enhanced error handling for export, file write, and event log operations, increased retries, and robust fallback logic.
 # Designed for an air-gapped environment running Windows PowerShell 5.1 (Windows Server 2019/2022).
-# Assumes the CCS share has appropriate permissions for NT AUTHORITY\SYSTEM, Administrators, and OCPLAB\ISMWIN2019IIS01$.
+# Assumes the CCS share grants NT AUTHORITY\SYSTEM and Administrators write access. Site names come from iis-cert-automation.config.json.
 
-# Manually define SNI and node hostnames
-$sniHostNames = @("acmeadcs.devops.local")  # Define your SNI hostnames here
-$nodeHostNames = @("acmeadcs", "labacme01.devops.local", "labacme01", "labacme02.devops.local", "labacme02")  # Define your node hostnames here, defaulting to local computer name
-$maxLogFiles = 5  # User-defined number of log files to keep
+param(
+    [string]$ConfigPath = $(Join-Path $PSScriptRoot "iis-cert-automation.config.json")
+)
+
+. (Join-Path $PSScriptRoot "Security.Common.ps1")
+
+$cfg = Import-AutomationConfig -ConfigPath $ConfigPath
+$sniHostNames = @($cfg.sniHostNames)
+$nodeHostNames = @($cfg.nodeHostNames)
+if (-not $sniHostNames -or -not $sniHostNames[0]) {
+    throw "Config sniHostNames is required."
+}
+$maxLogFiles = 5
+if ($cfg.maxLogFiles) { $maxLogFiles = [int]$cfg.maxLogFiles }
+$logDirSetting = if ($cfg.logDirectory) { [string]$cfg.logDirectory } else { "C:\Logs" }
+$tempPath = if ($cfg.tempDirectory) { [string]$cfg.tempDirectory } else { "C:\Temp" }
+Assert-SafeTaskPath $logDirSetting
+Assert-SafeTaskPath $tempPath
 
 $currentDate = Get-Date -Format "yyyyMMdd_HHmmss"
-$logPath = "C:\Logs\CertificateExport_$currentDate.log"
+$logPath = Join-Path $logDirSetting "CertificateExport_$currentDate.log"
 $successCount = 0  # Track successful exports
-$tempPath = "C:\Temp"  # Fallback local path for failed network writes
 $eventLogSource = "CertificateExport"
 $eventLogName = "Application"
 
@@ -117,16 +130,9 @@ function Mask-SensitiveData {
     param (
         [string]$Data
     )
-    if (-not $Data) {
-        return "Empty"
-    }
-    if ($Data.Length -le 2) {
-        return "*" * $Data.Length
-    }
-    $firstChar = $Data.Substring(0, 1)
-    $lastChar = $Data.Substring($Data.Length - 1, 1)
-    $maskedMiddle = "*" * ($Data.Length - 2)
-    return "${firstChar}${maskedMiddle}${lastChar}"
+    # Never return any character of a secret. Callers must not log the original value.
+    if (-not $Data) { return "absent" }
+    return "present"
 }
 
 # Function to extract Common Name (CN) from certificate subject
@@ -300,8 +306,7 @@ try {
             Write-ExportLog -Message "Retrieved password is empty or null" -Level "ERROR" -EventId 1015
             throw "Invalid password retrieved from Credential Manager"
         }
-        $maskedPassword = Mask-SensitiveData -Data $pfxPassword
-        Write-ExportLog -Message "Successfully retrieved PFX password from Credential Manager (masked): ${maskedPassword}" -Level "INFO" -EventId 1016
+        Write-ExportLog -Message "Successfully retrieved PFX password from Credential Manager. Password value was not logged." -Level "INFO" -EventId 1016
     } catch {
         Write-ExportLog -Message "Failed to retrieve PFX password from Credential Manager: $($_.Exception.Message)" -Level "ERROR" -EventId 1017
         throw
@@ -315,7 +320,8 @@ try {
             Write-ExportLog -Message "CCS is not enabled in registry (Enabled=$($registryValues.Enabled))." -Level "ERROR" -EventId 1018
             throw "CCS not enabled"
         }
-        $ccsPath = $registryValues.CertStoreLocation
+        $ccsPath = [string]$registryValues.CertStoreLocation
+        Assert-SafeTaskPath $ccsPath
         $outputDir = $ccsPath  # Export directly to CCS path
         Write-ExportLog -Message "CCS registry key found: PhysicalPath=$ccsPath, ExportPath=$outputDir" -Level "INFO" -EventId 1019
     } catch {
@@ -357,10 +363,18 @@ try {
             Write-ExportLog -Message "Write access to ${outputDir} is not sufficient" -Level "ERROR" -EventId 1028
             throw "Insufficient write access to output directory"
         }
-        # Test network connectivity to the file server
-        $fileServer = "ocp-lab-srv-1.ocplab.net"
-        if (-not (Test-NetworkConnectivity -Server $fileServer)) {
-            Write-ExportLog -Message "Network connectivity to ${fileServer} is unreliable, proceeding with caution" -Level "WARNING" -EventId 1029
+        Assert-SafeTaskPath $outputDir
+        $fileServer = $null
+        if ($cfg.fileServer) {
+            $fileServer = [string]$cfg.fileServer
+        } elseif ($outputDir -match '^\\\\([^\\]+)\\') {
+            $fileServer = $Matches[1]
+        }
+        if ($fileServer) {
+            Assert-SafeHostName $fileServer
+            if (-not (Test-NetworkConnectivity -Server $fileServer)) {
+                Write-ExportLog -Message "Network connectivity to ${fileServer} is unreliable, proceeding with caution" -Level "WARNING" -EventId 1029
+            }
         }
     } catch {
         Write-ExportLog -Message "Error accessing output directory ${outputDir}: $($_.Exception.Message)" -Level "ERROR" -EventId 1030
@@ -496,7 +510,7 @@ try {
                                         # Verify fallback file
                                         try {
                                             $testCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-                                            $testCert.Import($tempOutputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                                            $testCert.Import($tempOutputPath, $securePassword, (Get-EphemeralKeyStorageFlag))
                                             Write-ExportLog -Message "Verified fallback PFX file ${tempOutputPath}" -Level "INFO" -EventId 1054
                                             # Attempt manual copy to CCS path
                                             try {
@@ -528,7 +542,7 @@ try {
                     # Verify exported PFX file
                     try {
                         $testCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-                        $testCert.Import($outputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                        $testCert.Import($outputPath, $securePassword, (Get-EphemeralKeyStorageFlag))
                         Write-ExportLog -Message "Verified exported PFX file ${outputPath}" -Level "INFO" -EventId 1060
                     } catch {
                         Write-ExportLog -Message "Failed to verify exported PFX file ${outputPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1061
@@ -606,7 +620,7 @@ try {
                                         # Verify fallback file
                                         try {
                                             $testCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-                                            $testCert.Import($tempOutputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                                            $testCert.Import($tempOutputPath, $securePassword, (Get-EphemeralKeyStorageFlag))
                                             Write-ExportLog -Message "Verified fallback PFX file ${tempOutputPath}" -Level "INFO" -EventId 1054
                                             # Attempt manual copy to CCS path
                                             try {
@@ -638,7 +652,7 @@ try {
                     # Verify exported PFX file
                     try {
                         $testCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-                        $testCert.Import($outputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                        $testCert.Import($outputPath, $securePassword, (Get-EphemeralKeyStorageFlag))
                         Write-ExportLog -Message "Verified exported PFX file ${outputPath}" -Level "INFO" -EventId 1060
                     } catch {
                         Write-ExportLog -Message "Failed to verify exported PFX file ${outputPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1061
@@ -663,4 +677,8 @@ try {
 } catch {
     Write-ExportLog -Message "Error during certificate export: $($_.Exception.Message)" -Level "ERROR" -EventId 1066
     throw
+} finally {
+    $pfxPassword = $null
+    $securePassword = $null
+    $pfxBytes = $null
 }

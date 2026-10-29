@@ -26,7 +26,7 @@ How to run and test locally (developer workflow)
 - Prereqs: run as Administrator on a Windows Server 2019/2022 VM, PowerShell 5.1. Ensure Task Scheduler service is running.
 - Quick setup example (interactive PFX password):
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File Setup_CCS_and_Task.ps1 \
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File Setup_CCS_and_Task.ps1 \
   -CcsPhysicalPath "\\\\file-server\\IIS_Cert_Store" \
   -PfxPassword (Read-Host -AsSecureString "Enter PFX password for CCS") \
   -ExportScriptPath "C:\\Scripts\\Export_Cert_CCS_Secure.ps1" \
@@ -93,7 +93,7 @@ Test-Path "HKLM:\SOFTWARE\Microsoft\IIS\CentralCertProvider"
 - **Test scheduled task trigger:** register the task via `Setup_CCS_and_Task.ps1` then simulate the event or run the task manually and verify the task writes expected logs to `C:\Logs` and Event Log entries (source names in scripts). Use `Get-ScheduledTask` and `Get-ScheduledTaskInfo` to inspect.
 - **Run export script manually (dry run):** run `Export_Cert_CCS_Secure.ps1` interactively, set `-pfxBasePath` to a local folder and provide a test `SecureString` password to verify export logic and logging.
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File Export_Cert_CCS_Secure.ps1 -pfxBasePath "C:\Temp\Certs" -PfxPassword (ConvertTo-SecureString "TestPass" -AsPlainText -Force)
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File Export_Cert_CCS_Secure.ps1
 ```
 - **Check IIS binding discovery:** verify `appcmd.exe list sites` returns HTTPS bindings and that the script extracts hostnames. If IIS has no HTTPS bindings, ensure `.pfx` files exist in CCS path as fallback.
 - **UNC connectivity helper:** run `IIS_Cert_Auto_Package\UNC-Connectivity-Checker.ps1` to exercise reconnect logic, log rotation, and Event Log messages.

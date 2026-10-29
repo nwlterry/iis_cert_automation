@@ -5,3 +5,4 @@ Thumbs.db
 *.xlsx
 archive/
 old-package/
+iis-cert-automation.config.json

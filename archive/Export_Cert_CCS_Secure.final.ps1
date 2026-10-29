@@ -1,3 +1,5 @@
+#requires -Version 99.0
+# Archived copy disabled after the 2026-10-29 security review. Do not deploy.
 # PowerShell script to export certificates from the local computer certificate store (Cert:\LocalMachine\My)
 # to PFX files in the IIS Centralized Certificate Store (CCS) path using a password stored in the Credential Manager.
 # Only certificates with a Common Name (CN) matching the SNI host names in IIS HTTPS bindings are exported.
@@ -8,7 +10,7 @@
 # Includes enhanced error handling for export and file write operations, increased retries, and robust fallback logic.
 # Designed for an air-gapped environment running Windows PowerShell 5.1 (Windows Server 2019/2022).
 # Logs all actions to a file under C:\Logs with full timestamp.
-# Assumes the CCS share has appropriate permissions for NT AUTHORITY\SYSTEM, Administrators, and OCPLAB\ISMWIN2019IIS01$.
+# Assumes the CCS share has appropriate permissions for NT AUTHORITY\SYSTEM, Administrators, and EXAMPLE\ISMWIN2019IIS01$.
 
 $currentDate = Get-Date -Format "yyyyMMdd_HHmmss"
 $logPath = "C:\Logs\CertificateExport_$currentDate.log"
@@ -277,7 +279,7 @@ try {
             throw "Insufficient write access to output directory"
         }
         # Test network connectivity to the file server
-        $fileServer = "ocp-lab-srv-1.ocplab.net"
+        $fileServer = "host.example"
         if (-not (Test-NetworkConnectivity -Server $fileServer)) {
             Write-ExportLog -Message "Network connectivity to ${fileServer} is unreliable, proceeding with caution" -Level "WARNING" -EventId 1072
         }
@@ -425,7 +427,7 @@ try {
                                 # Verify fallback file
                                 try {
                                     $testCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-                                    $testCert.Import($tempOutputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                                    $testCert.Import($tempOutputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
                                     Write-ExportLog -Message "Verified fallback PFX file ${tempOutputPath}" -EventId 1100
                                     # Attempt manual copy to CCS path
                                     try {
@@ -457,7 +459,7 @@ try {
             # Verify exported PFX file
             try {
                 $testCert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
-                $testCert.Import($outputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet)
+                $testCert.Import($outputPath, $securePassword, [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
                 Write-ExportLog -Message "Verified exported PFX file ${outputPath}" -EventId 1106
             } catch {
                 Write-ExportLog -Message "Failed to verify exported PFX file ${outputPath}: $($_.Exception.Message)" -Level "ERROR" -EventId 1107

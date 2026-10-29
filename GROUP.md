@@ -7,6 +7,7 @@ This repository belongs to **Certificates / Windows PKI**.
 ## Sibling repositories
 
 - [iis_cert_automation](https://github.com/nwlterry/iis_cert_automation)
+- [iis_cert_automation-dotnet](https://github.com/nwlterry/iis_cert_automation-dotnet)
 - [ssrs_cert-automation](https://github.com/nwlterry/ssrs_cert-automation)
 - [certificarte_management](https://github.com/nwlterry/certificarte_management)
 - [acme-adcs_upgrade_planning](https://github.com/nwlterry/acme-adcs_upgrade_planning)
