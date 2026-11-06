@@ -1,5 +1,4 @@
-#requires -Version 99.0
-# Archived copy disabled after the 2026-10-29 security review. Do not deploy.
+#requires -Version 5.1
 # PowerShell script to export certificates from the local computer certificate store (Cert:\LocalMachine\My)
 # to PFX files in the IIS Centralized Certificate Store (CCS) path using a password stored in the Credential Manager.
 # Certificates are exported only if their Common Name (CN) matches one of the manually defined SNI hostnames
