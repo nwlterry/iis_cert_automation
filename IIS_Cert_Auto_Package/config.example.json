@@ -10,5 +10,6 @@
   "allowInsecureHealthCheck": false,
   "logDirectory": "C:\\Logs",
   "tempDirectory": "C:\\Temp",
-  "maxLogFiles": 5
+  "maxLogFiles": 5,
+  "certificateTemplate": "Internal Web Server"
 }
